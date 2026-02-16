@@ -132,8 +132,15 @@ class DiskMapperViewModel : ViewModel() {
                         ScanSource.ALL_FILES -> {
                             val rootPath = state.selectedRootPath
                                 ?: return@runCatching throw IllegalStateException("Root path is not selected")
-                            scanner.scanFileTree(File(rootPath)) { visited ->
+                            val baseScan = scanner.scanFileTree(File(rootPath)) { visited ->
                                 _uiState.update { it.copy(visitedNodes = visited) }
+                            }
+                            if (rootPath == "/storage/emulated/0" && shizukuBridge.canUseWithoutRequest()) {
+                                val payload = shizukuBridge.scanAndroidPrivate(context.applicationContext, false)
+                                val shizukuItems = parseShizukuPayload(payload)
+                                mergeRootAndShizuku(baseScan, shizukuItems)
+                            } else {
+                                baseScan
                             }
                         }
                         ScanSource.SHIZUKU_ANDROID -> {
@@ -277,6 +284,42 @@ class DiskMapperViewModel : ViewModel() {
             return "No readable files in Android/data or Android/obb via shell Shizuku. Root/Sui backend is recommended."
         }
         return null
+    }
+
+    private fun mergeRootAndShizuku(
+        base: com.kvita.diskmapper.data.ScanResult,
+        shizukuItems: List<StorageItem>
+    ): com.kvita.diskmapper.data.ScanResult {
+        if (shizukuItems.isEmpty()) return base
+
+        val mergedMap = linkedMapOf<String, StorageItem>()
+        for (item in base.items) {
+            val key = item.absolutePath ?: item.uri.toString()
+            mergedMap[key] = item
+        }
+        for (item in shizukuItems) {
+            val key = item.absolutePath ?: item.uri.toString()
+            mergedMap[key] = item
+        }
+
+        val baseAndroidPrivate = base.items
+            .filter { it.isDirectory && (it.absolutePath == "/storage/emulated/0/Android/data" || it.absolutePath == "/storage/emulated/0/Android/obb") }
+        val baseLogicalPrivate = baseAndroidPrivate.sumOf { it.logicalSizeBytes }
+        val baseOnDiskPrivate = baseAndroidPrivate.sumOf { it.onDiskSizeBytes }
+        val shizukuAndroidPrivate = shizukuItems
+            .filter { it.isDirectory && (it.absolutePath == "/storage/emulated/0/Android/data" || it.absolutePath == "/storage/emulated/0/Android/obb") }
+        val shizukuLogicalPrivate = shizukuAndroidPrivate.sumOf { it.logicalSizeBytes }
+        val shizukuOnDiskPrivate = shizukuAndroidPrivate.sumOf { it.onDiskSizeBytes }
+
+        val newLogical = base.rootLogicalSizeBytes - baseLogicalPrivate + shizukuLogicalPrivate
+        val newOnDisk = base.rootOnDiskSizeBytes - baseOnDiskPrivate + shizukuOnDiskPrivate
+
+        return com.kvita.diskmapper.data.ScanResult(
+            items = mergedMap.values.sortedByDescending { it.onDiskSizeBytes },
+            visitedNodes = base.visitedNodes + shizukuItems.size,
+            rootLogicalSizeBytes = newLogical.coerceAtLeast(0L),
+            rootOnDiskSizeBytes = newOnDisk.coerceAtLeast(0L)
+        )
     }
 }
 

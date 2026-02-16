@@ -7,18 +7,19 @@ import android.os.Environment
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -55,10 +56,6 @@ enum class FileFilter {
     ALL, TELEGRAM, VIDEOS, ARCHIVES, INSTALLERS
 }
 
-enum class ViewMode {
-    TREE, LIST
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
@@ -66,7 +63,6 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     var filter by remember { mutableStateOf(FileFilter.ALL) }
-    var viewMode by remember { mutableStateOf(ViewMode.TREE) }
     var pendingDelete by remember { mutableStateOf<StorageItem?>(null) }
     val expandedMap = remember { mutableStateMapOf<String, Boolean>() }
 
@@ -90,8 +86,8 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
         }
     }
 
-    val treeRoots = remember(filteredItems) {
-        buildTree(filteredItems)
+    val treeRoots = remember(filteredItems, state.selectedRootPath) {
+        buildTree(filteredItems, state.selectedRootPath)
     }
     val treeRows = remember(treeRoots, expandedMap) {
         flattenTree(treeRoots, expandedMap)
@@ -190,11 +186,6 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip("Tree", viewMode == ViewMode.TREE) { viewMode = ViewMode.TREE }
-                FilterChip("List", viewMode == ViewMode.LIST) { viewMode = ViewMode.LIST }
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip("All", filter == FileFilter.ALL) { filter = FileFilter.ALL }
                 FilterChip("Telegram", filter == FileFilter.TELEGRAM) { filter = FileFilter.TELEGRAM }
                 FilterChip("Videos", filter == FileFilter.VIDEOS) { filter = FileFilter.VIDEOS }
@@ -209,19 +200,19 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 }
             }
 
-            if (viewMode == ViewMode.TREE && treeRows.isNotEmpty()) {
+            if (treeRows.isNotEmpty()) {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(treeRows.take(500), key = { it.node.path }) { row ->
                         ItemCard(
                             item = row.node.item,
                             depth = row.depth,
                             canExpand = row.node.children.isNotEmpty(),
-                            expanded = expandedMap[row.node.path] ?: false,
+                            expanded = expandedMap[row.node.path] ?: (row.depth == 0),
                             onToggleExpand = {
-                                val current = expandedMap[row.node.path] ?: false
+                                val current = expandedMap[row.node.path] ?: (row.depth == 0)
                                 expandedMap[row.node.path] = !current
                             },
-                            onDelete = { pendingDelete = row.node.item }
+                            onDelete = { row.node.item?.let { pendingDelete = it } }
                         )
                     }
                 }
@@ -267,50 +258,45 @@ private fun FilterChip(title: String, selected: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun ItemCard(
-    item: StorageItem,
+    item: StorageItem?,
     depth: Int,
     canExpand: Boolean,
     expanded: Boolean,
     onToggleExpand: () -> Unit,
     onDelete: () -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = canExpand) { onToggleExpand() }
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = (depth * 12).dp),
+                    .padding(start = (depth * 10).dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                Spacer(modifier = Modifier.width(2.dp))
                 if (canExpand) {
-                    TextButton(onClick = onToggleExpand) {
-                        Text(if (expanded) "-" else "+")
-                    }
+                    Text(if (expanded) "▾" else "▸")
+                } else {
+                    Text("·")
                 }
-                Icon(
-                    if (item.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile,
-                    contentDescription = null
-                )
-                Column {
-                    Text(item.name, maxLines = 1)
-                    Text(
-                        text = "Logical: ${formatBytes(item.logicalSizeBytes)}",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        text = "On-disk est: ${formatBytes(item.onDiskSizeBytes)}",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
+                Text(item?.name ?: "(folder)")
             }
-            if (!item.isDirectory) {
+            Text(
+                text = formatBytes(item?.onDiskSizeBytes ?: 0L),
+                style = MaterialTheme.typography.bodySmall
+            )
+            if (item != null && !item.isDirectory) {
                 IconButton(onClick = onDelete) {
                     Icon(Icons.Default.Delete, contentDescription = "Delete")
                 }
@@ -373,7 +359,9 @@ private fun requestAllFilesAccess(context: android.content.Context) {
 
 private data class TreeNode(
     val path: String,
-    val item: StorageItem,
+    val name: String,
+    var item: StorageItem? = null,
+    var onDiskSizeBytes: Long = 0L,
     val children: MutableList<TreeNode> = mutableListOf()
 )
 
@@ -382,31 +370,45 @@ private data class TreeRow(
     val depth: Int
 )
 
-private fun buildTree(items: List<StorageItem>): List<TreeNode> {
+private fun buildTree(items: List<StorageItem>, basePath: String?): List<TreeNode> {
     val pathItems = items.filter { !it.absolutePath.isNullOrBlank() }
     if (pathItems.isEmpty()) return emptyList()
 
-    val byPath = pathItems.associateBy { it.absolutePath!! }.toMutableMap()
-    val nodes = byPath.mapValues { (path, item) -> TreeNode(path = path, item = item) }.toMutableMap()
-    val roots = mutableListOf<TreeNode>()
+    val root = TreeNode(path = "", name = "")
+    val nodeMap = hashMapOf("" to root)
 
-    for ((path, node) in nodes) {
-        val parentPath = parentPath(path)
-        val parent = if (parentPath == null) null else nodes[parentPath]
-        if (parent != null) {
-            parent.children += node
-        } else {
-            roots += node
+    for (item in pathItems) {
+        val abs = item.absolutePath ?: continue
+        val relative = toRelativePath(abs, basePath)
+        if (relative.isBlank()) continue
+        val parts = relative.split('/').filter { it.isNotBlank() }
+
+        var currentPath = ""
+        var parent = root
+        for (part in parts) {
+            currentPath = if (currentPath.isEmpty()) part else "$currentPath/$part"
+            val existing = nodeMap[currentPath]
+            val node = if (existing != null) existing else {
+                val created = TreeNode(path = currentPath, name = part)
+                nodeMap[currentPath] = created
+                parent.children += created
+                created
+            }
+            parent = node
         }
+
+        parent.item = item
+        parent.onDiskSizeBytes = item.onDiskSizeBytes
     }
 
-    roots.forEach { sortNode(it) }
-    return roots.sortedByDescending { it.item.onDiskSizeBytes }
+    aggregateTree(root)
+    root.children.forEach { sortNode(it) }
+    return root.children.sortedByDescending { it.onDiskSizeBytes }
 }
 
 private fun flattenTree(roots: List<TreeNode>, expanded: Map<String, Boolean>): List<TreeRow> {
     val out = mutableListOf<TreeRow>()
-    for (root in roots.sortedByDescending { it.item.onDiskSizeBytes }) {
+    for (root in roots.sortedByDescending { it.onDiskSizeBytes }) {
         appendNode(root, 0, expanded, out)
     }
     return out
@@ -419,22 +421,34 @@ private fun appendNode(
     out: MutableList<TreeRow>
 ) {
     out += TreeRow(node, depth)
-    if (expanded[node.path] == true) {
-        for (child in node.children.sortedByDescending { it.item.onDiskSizeBytes }) {
+    val isExpanded = expanded[node.path] ?: (depth == 0)
+    if (isExpanded) {
+        for (child in node.children.sortedByDescending { it.onDiskSizeBytes }) {
             appendNode(child, depth + 1, expanded, out)
         }
     }
 }
 
 private fun sortNode(node: TreeNode) {
-    node.children.sortByDescending { it.item.onDiskSizeBytes }
+    node.children.sortByDescending { it.onDiskSizeBytes }
     node.children.forEach { sortNode(it) }
 }
 
-private fun parentPath(path: String): String? {
-    val normalized = path.trimEnd('/', '\\')
-    val idx = normalized.lastIndexOfAny(charArrayOf('/', '\\'))
-    if (idx <= 0) return null
-    return normalized.substring(0, idx)
+private fun aggregateTree(node: TreeNode): Long {
+    var sum = node.item?.onDiskSizeBytes ?: 0L
+    for (child in node.children) {
+        sum += aggregateTree(child)
+    }
+    node.onDiskSizeBytes = maxOf(node.onDiskSizeBytes, sum)
+    return node.onDiskSizeBytes
+}
+
+private fun toRelativePath(absPath: String, basePath: String?): String {
+    val normalizedAbs = absPath.replace('\\', '/').trim('/')
+    val normalizedBase = basePath?.replace('\\', '/')?.trim('/') ?: ""
+    if (normalizedBase.isNotBlank() && normalizedAbs.startsWith(normalizedBase)) {
+        return normalizedAbs.removePrefix(normalizedBase).trim('/')
+    }
+    return normalizedAbs
 }
 

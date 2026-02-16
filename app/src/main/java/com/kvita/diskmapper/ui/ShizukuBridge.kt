@@ -26,6 +26,12 @@ class ShizukuBridge {
         PERMISSION_DENIED
     }
 
+    fun canUseWithoutRequest(): Boolean {
+        if (!Shizuku.pingBinder()) return false
+        if (Shizuku.isPreV11()) return false
+        return Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+    }
+
     fun ensurePermission(): PermissionState {
         if (!Shizuku.pingBinder()) return PermissionState.SHIZUKU_NOT_RUNNING
         if (Shizuku.isPreV11()) return PermissionState.SHIZUKU_NOT_RUNNING
