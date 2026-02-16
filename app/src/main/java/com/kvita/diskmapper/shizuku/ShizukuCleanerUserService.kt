@@ -14,7 +14,19 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
 
         val items = ArrayList<Record>()
         for (target in targets) {
-            walk(target, target, telegramOnly, items)
+            val listed = runCatching { target.listFiles() }.getOrNull()
+            if (listed != null) {
+                walk(target, target, telegramOnly, items)
+            } else {
+                val duBytes = readDuBytes(target.absolutePath) ?: 0L
+                items += Record(
+                    path = target.absolutePath,
+                    name = target.name.ifEmpty { "(folder)" },
+                    logicalBytes = duBytes,
+                    onDiskBytes = duBytes,
+                    isDirectory = true
+                )
+            }
         }
 
         val sorted = items.sortedByDescending { it.onDiskBytes }
@@ -46,7 +58,9 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
         val obb = targets.find { it.absolutePath.endsWith("/Android/obb") }
         val dataEntries = data?.listFiles()?.size ?: -1
         val obbEntries = obb?.listFiles()?.size ?: -1
-        return "uid=$uid;dataEntries=$dataEntries;obbEntries=$obbEntries"
+        val dataDuMb = (readDuBytes("/storage/emulated/0/Android/data") ?: -1L) / (1024L * 1024L)
+        val obbDuMb = (readDuBytes("/storage/emulated/0/Android/obb") ?: -1L) / (1024L * 1024L)
+        return "uid=$uid;dataEntries=$dataEntries;obbEntries=$obbEntries;duDataMb=$dataDuMb;duObbMb=$obbDuMb"
     }
 
     private fun walk(root: File, current: File, telegramOnly: Boolean, out: MutableList<Record>): SizePair {
@@ -111,10 +125,23 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
         for (path in candidates) {
             val file = File(path)
             if (!file.exists() || !file.isDirectory) continue
-            val canRead = runCatching { file.listFiles() != null }.getOrDefault(false)
-            if (canRead) valid += file
+            valid += file
         }
         return valid.distinctBy { it.absolutePath }
+    }
+
+    private fun readDuBytes(path: String): Long? {
+        val safePath = path.replace("\"", "\\\"")
+        val command = "du -sk \"$safePath\" 2>/dev/null | head -n 1"
+        return runCatching {
+            val process = ProcessBuilder("sh", "-c", command)
+                .redirectErrorStream(true)
+                .start()
+            val line = process.inputStream.bufferedReader().use { it.readLine().orEmpty() }
+            process.waitFor()
+            val kb = line.trim().split(Regex("\\s+")).firstOrNull()?.toLongOrNull() ?: return@runCatching null
+            kb * 1024L
+        }.getOrNull()
     }
 
     private fun estimateOnDisk(logicalBytes: Long): Long {

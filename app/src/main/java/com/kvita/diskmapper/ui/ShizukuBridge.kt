@@ -47,7 +47,7 @@ class ShizukuBridge {
         }
     }
 
-    suspend fun scanAndroidPrivate(context: Context, telegramOnly: Boolean, maxItems: Int = 400): String {
+    suspend fun scanAndroidPrivate(context: Context, telegramOnly: Boolean, maxItems: Int = 5000): String {
         return withService(context) { service ->
             service.scanPaths("/storage/emulated/0", telegramOnly, maxItems)
         }

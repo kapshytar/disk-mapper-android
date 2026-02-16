@@ -85,11 +85,20 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
         }
     }
 
-    val treeRoots = remember(filteredItems, state.selectedRootPath) {
-        buildTree(filteredItems, state.selectedRootPath)
+    val treeBasePath = remember(state.scanSource, state.selectedRootPath) {
+        when (state.scanSource) {
+            ScanSource.ALL_FILES -> state.selectedRootPath
+            ScanSource.SHIZUKU_ANDROID -> "/storage/emulated/0/Android"
+            ScanSource.SAF -> null
+        }
     }
-    val treeRows = remember(treeRoots, expandedMap) {
-        flattenTree(treeRoots, expandedMap)
+    val treeRoots = remember(filteredItems, treeBasePath) {
+        buildTree(filteredItems, treeBasePath)
+    }
+    val treeRows = flattenTree(treeRoots, expandedMap.toMap())
+
+    LaunchedEffect(treeRoots) {
+        expandedMap.clear()
     }
 
     LaunchedEffect(state.errorMessage) {
@@ -284,7 +293,7 @@ private fun ItemCard(
         Row(
             modifier = Modifier
                 .weight(1f)
-                .padding(start = (depth * 12).dp),
+                .padding(start = (depth * 10).dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
