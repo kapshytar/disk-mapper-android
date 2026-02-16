@@ -4,12 +4,16 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import com.kvita.diskmapper.BuildConfig
 import com.kvita.diskmapper.shizuku.IShizukuCleanerService
 import com.kvita.diskmapper.shizuku.ShizukuCleanerUserService
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import rikka.shizuku.Shizuku
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
@@ -19,6 +23,8 @@ class ShizukuBridge {
     companion object {
         const val REQUEST_CODE = 9901
     }
+    private val serviceCallMutex = Mutex()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     enum class PermissionState {
         READY,
@@ -69,6 +75,15 @@ class ShizukuBridge {
         context: Context,
         block: (IShizukuCleanerService) -> T
     ): T {
+        return serviceCallMutex.withLock {
+            withServiceInternal(context, block)
+        }
+    }
+
+    private suspend fun <T> withServiceInternal(
+        context: Context,
+        block: (IShizukuCleanerService) -> T
+    ): T {
         val args = Shizuku.UserServiceArgs(
             ComponentName(context.packageName, ShizukuCleanerUserService::class.java.name)
         )
@@ -81,11 +96,13 @@ class ShizukuBridge {
         return withTimeout(15000L) {
             suspendCancellableCoroutine { continuation ->
                 val consumed = AtomicBoolean(false)
+                val unbound = AtomicBoolean(false)
                 val connection = object : ServiceConnection {
                     override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                         if (!consumed.compareAndSet(false, true)) return
                         val service = IShizukuCleanerService.Stub.asInterface(binder)
                         if (service == null) {
+                            scheduleUnbind(args, this, unbound)
                             continuation.resumeWithException(IllegalStateException("Shizuku service bind failed"))
                             return
                         }
@@ -95,9 +112,8 @@ class ShizukuBridge {
                         } catch (t: Throwable) {
                             continuation.resumeWithException(t)
                         } finally {
-                            runCatching {
-                                Shizuku.unbindUserService(args, this, true)
-                            }
+                            // Unbind outside the callback stack to avoid CME in Shizuku internals.
+                            scheduleUnbind(args, this, unbound)
                         }
                     }
 
@@ -106,9 +122,7 @@ class ShizukuBridge {
                 }
 
                 continuation.invokeOnCancellation {
-                    runCatching {
-                        Shizuku.unbindUserService(args, connection, true)
-                    }
+                    scheduleUnbind(args, connection, unbound)
                 }
 
                 runCatching {
@@ -117,6 +131,19 @@ class ShizukuBridge {
                     consumed.set(true)
                     continuation.resumeWithException(it)
                 }
+            }
+        }
+    }
+
+    private fun scheduleUnbind(
+        args: Shizuku.UserServiceArgs,
+        connection: ServiceConnection,
+        unbound: AtomicBoolean
+    ) {
+        if (!unbound.compareAndSet(false, true)) return
+        mainHandler.post {
+            runCatching {
+                Shizuku.unbindUserService(args, connection, true)
             }
         }
     }

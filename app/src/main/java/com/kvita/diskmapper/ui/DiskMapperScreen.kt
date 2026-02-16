@@ -47,6 +47,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kvita.diskmapper.data.StorageItem
@@ -213,7 +214,8 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(0.dp)) {
                     items(treeRows.take(500), key = { it.node.path }) { row ->
                         ItemCard(
-                            label = row.guide + row.node.name.ifBlank { row.node.item?.name ?: "(folder)" },
+                            label = row.node.name.ifBlank { row.node.item?.name ?: "(folder)" },
+                            guide = row.guide,
                             item = row.node.item,
                             canExpand = row.node.children.isNotEmpty(),
                             expanded = expandedMap[row.node.path] ?: false,
@@ -232,6 +234,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                     items(filteredItems.take(300), key = { it.uri.toString() }) { item ->
                         ItemCard(
                             label = item.name,
+                            guide = "",
                             item = item,
                             canExpand = false,
                             expanded = false,
@@ -272,6 +275,7 @@ private fun FilterChip(title: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 private fun ItemCard(
     label: String,
+    guide: String,
     item: StorageItem?,
     canExpand: Boolean,
     expanded: Boolean,
@@ -292,15 +296,37 @@ private fun ItemCard(
             modifier = Modifier
                 .weight(1f),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Spacer(modifier = Modifier.width(2.dp))
-            if (canExpand) {
-                Text(if (expanded) "▾" else "▸", style = MaterialTheme.typography.bodySmall)
-            } else {
-                Text("•", style = MaterialTheme.typography.bodySmall)
+            if (guide.isNotEmpty()) {
+                Text(
+                    text = guide,
+                    maxLines = 1,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace
+                )
             }
-            Text(label, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+            if (canExpand) {
+                Text(
+                    if (expanded) "[-]" else "[+]",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace
+                )
+            } else {
+                Text(
+                    "   ",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            Text(
+                label,
+                maxLines = 1,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            if (item?.isDirectory == true || canExpand) {
+                Spacer(modifier = Modifier.width(2.dp))
+            }
         }
         Text(
             text = "${formatBytes(displayOnDiskBytes)} | ${formatBytes(displayLogicalBytes)}",
@@ -447,10 +473,10 @@ private fun appendNode(
 ) {
     val guide = buildString {
         for (hasNext in ancestorHasNext) {
-            append(if (hasNext) "│ " else "  ")
+            append(if (hasNext) "│  " else "   ")
         }
         if (depth > 0) {
-            append(if (isLast) "└ " else "├ ")
+            append(if (isLast) "└─ " else "├─ ")
         }
     }
     out += TreeRow(node, guide)
