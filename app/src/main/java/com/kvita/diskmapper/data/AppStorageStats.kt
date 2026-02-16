@@ -54,7 +54,12 @@ object AppStorageStats {
         } else {
             queryCategoryBreakdown()
         }
-        val apps = queryPerApp(context)
+        val apps = if (!diskStatsRaw.isNullOrBlank()) {
+            val parsed = parsePerAppFromDiskStats(context, diskStatsRaw)
+            if (parsed.isNotEmpty()) parsed else queryPerApp(context)
+        } else {
+            queryPerApp(context)
+        }
         return FullStorageInfo(categories, apps)
     }
 
@@ -115,7 +120,7 @@ object AppStorageStats {
                 val appBytes = stats.appBytes
                 val dataBytes = stats.dataBytes
                 val cacheBytes = stats.cacheBytes
-                val total = appBytes + dataBytes
+                val total = appBytes + dataBytes + cacheBytes
                 if (total <= 0) continue
                 val label = try {
                     pm.getApplicationLabel(app).toString()
@@ -129,6 +134,63 @@ object AppStorageStats {
         }
         result.sortByDescending { it.totalBytes }
         return result
+    }
+
+    private fun parsePerAppFromDiskStats(context: Context, output: String): List<AppUsage> {
+        fun section(prefix: String): String? {
+            val regex = Regex("$prefix:\\s*\\[(.*?)]", setOf(RegexOption.DOT_MATCHES_ALL))
+            return regex.find(output)?.groupValues?.getOrNull(1)
+        }
+
+        fun parseQuotedList(content: String?): List<String> {
+            if (content.isNullOrBlank()) return emptyList()
+            return Regex("\"([^\"]+)\"")
+                .findAll(content)
+                .map { it.groupValues[1] }
+                .toList()
+        }
+
+        fun parseLongList(content: String?): List<Long> {
+            if (content.isNullOrBlank()) return emptyList()
+            return content
+                .split(',')
+                .mapNotNull { it.trim().toLongOrNull() }
+        }
+
+        val packageNames = parseQuotedList(section("Package Names"))
+        val appSizes = parseLongList(section("App Sizes"))
+        val dataSizes = parseLongList(section("App Data Sizes"))
+        val cacheSizes = parseLongList(section("Cache Sizes"))
+        if (packageNames.isEmpty() || appSizes.isEmpty() || dataSizes.isEmpty()) return emptyList()
+
+        val pm = context.packageManager
+        val count = minOf(packageNames.size, appSizes.size, dataSizes.size)
+        val out = ArrayList<AppUsage>(count)
+        for (i in 0 until count) {
+            val pkg = packageNames[i]
+            val appBytes = appSizes[i]
+            val dataBytes = dataSizes[i]
+            val cacheBytes = cacheSizes.getOrNull(i) ?: 0L
+            val total = appBytes + dataBytes + cacheBytes
+            if (total <= 0L) continue
+
+            val label = runCatching {
+                val appInfo = pm.getApplicationInfo(pkg, 0)
+                pm.getApplicationLabel(appInfo).toString()
+            }.getOrElse { pkg }
+
+            out += AppUsage(
+                packageName = pkg,
+                label = label,
+                appBytes = appBytes,
+                dataBytes = dataBytes,
+                cacheBytes = cacheBytes,
+                totalBytes = total
+            )
+        }
+
+        out.sortByDescending { it.totalBytes }
+        return out
     }
 
     /** Convert full info to StorageItems for tree UI. */
