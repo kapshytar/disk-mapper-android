@@ -51,7 +51,10 @@
       "Bash(\"$ADB\" shell \"logcat -d -t 300 | grep -E ''DiskMapper|kvita|AndroidRuntime|FATAL''\")",
       "Bash(\"$ADB\" shell am start -W -n com.kvita.diskmapper/.MainActivity)",
       "Bash(\"$ADB\" shell \"logcat -d | grep -iE ''AndroidRuntime|FATAL|Exception|Error|DiskMapperTrace''\")",
-      "Bash(\"$ADB\" shell \"logcat -d | grep DiskMapperTrace\")"
+      "Bash(\"$ADB\" shell \"logcat -d | grep DiskMapperTrace\")",
+      "Bash(git merge:*)",
+      "Bash(\"$ADB\" install -r \"C:/DiskMapperAndroid/app/build/outputs/apk/debug/app-debug.apk\")",
+      "Bash(\"$ADB\" shell \"logcat -d | grep -iE ''cleaner|diskmapper.*cleaner|lowmem|oom|kill.*kvita|Process.*died''\")"
     ]
   }
 }
