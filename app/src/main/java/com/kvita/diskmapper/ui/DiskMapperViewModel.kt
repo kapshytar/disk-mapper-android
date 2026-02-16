@@ -160,9 +160,14 @@ class DiskMapperViewModel : ViewModel() {
                                 _uiState.update { it.copy(visitedNodes = visited) }
                             }
                             if (rootPath == "/storage/emulated/0" && shizukuBridge.canUseWithoutRequest()) {
-                                val payload = shizukuBridge.scanAndroidPrivate(context.applicationContext, false)
-                                val shizukuItems = parseShizukuPayload(payload)
-                                mergeRootAndShizuku(baseScan, shizukuItems)
+                                try {
+                                    val payload = shizukuBridge.scanAndroidPrivate(context.applicationContext, false)
+                                    val shizukuItems = parseShizukuPayload(payload)
+                                    mergeRootAndShizuku(baseScan, shizukuItems)
+                                } catch (e: Throwable) {
+                                    UiTrace.error("shizuku merge failed, using base scan only", e)
+                                    baseScan
+                                }
                             } else {
                                 baseScan
                             }

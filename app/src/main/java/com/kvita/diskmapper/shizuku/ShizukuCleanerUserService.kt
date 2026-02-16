@@ -31,7 +31,23 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
 
         val sorted = items.sortedByDescending { it.onDiskBytes }
         val capped = if (maxItems > 0) sorted.take(maxItems) else sorted
-        return capped.joinToString("\n") { record ->
+
+        // Build result string carefully — Binder has ~1MB transaction limit.
+        // If the full payload is too large, drop leaf files and keep directories only.
+        val full = buildPayload(capped)
+        if (full.length < 800_000) return full
+
+        // Fallback: directories only (much smaller payload)
+        val dirsOnly = capped.filter { it.isDirectory }
+        val dirPayload = buildPayload(dirsOnly)
+        if (dirPayload.length < 800_000) return dirPayload
+
+        // Ultra fallback: top N dirs by size
+        return buildPayload(dirsOnly.take(500))
+    }
+
+    private fun buildPayload(records: List<Record>): String {
+        return records.joinToString("\n") { record ->
             listOf(
                 record.path,
                 record.name,
