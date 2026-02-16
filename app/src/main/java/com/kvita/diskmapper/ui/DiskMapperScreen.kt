@@ -44,9 +44,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kvita.diskmapper.data.StorageItem
+import java.util.Locale
 
 enum class FileFilter {
-    ALL, VIDEOS, ARCHIVES, INSTALLERS
+    ALL, TELEGRAM, VIDEOS, ARCHIVES, INSTALLERS
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -70,6 +71,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
         state.items.filter { item ->
             when (filter) {
                 FileFilter.ALL -> true
+                FileFilter.TELEGRAM -> item.isTelegramRelated()
                 FileFilter.VIDEOS -> item.mimeType?.startsWith("video/") == true || item.name.endsWith(".mp4", true) || item.name.endsWith(".mkv", true)
                 FileFilter.ARCHIVES -> item.name.endsWith(".zip", true) || item.name.endsWith(".rar", true) || item.name.endsWith(".7z", true)
                 FileFilter.INSTALLERS -> item.name.endsWith(".apk", true) || item.name.endsWith(".xapk", true)
@@ -109,16 +111,22 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                     Text(if (state.selectedFolderUri == null) "Select folder" else "Change folder")
                 }
                 if (state.selectedFolderUri != null) {
-                    Text(
-                        text = "Total: ${formatBytes(state.rootSizeBytes)}",
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.align(Alignment.CenterVertically)
-                    )
+                    Column(modifier = Modifier.align(Alignment.CenterVertically)) {
+                        Text(
+                            text = "Logical: ${formatBytes(state.rootLogicalSizeBytes)}",
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Text(
+                            text = "On-disk est: ${formatBytes(state.rootOnDiskSizeBytes)}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip("All", filter == FileFilter.ALL) { filter = FileFilter.ALL }
+                FilterChip("Telegram", filter == FileFilter.TELEGRAM) { filter = FileFilter.TELEGRAM }
                 FilterChip("Videos", filter == FileFilter.VIDEOS) { filter = FileFilter.VIDEOS }
                 FilterChip("Archives", filter == FileFilter.ARCHIVES) { filter = FileFilter.ARCHIVES }
                 FilterChip("Installers", filter == FileFilter.INSTALLERS) { filter = FileFilter.INSTALLERS }
@@ -186,7 +194,14 @@ private fun ItemCard(item: StorageItem, onDelete: () -> Unit) {
                 )
                 Column {
                     Text(item.name, maxLines = 1)
-                    Text(formatBytes(item.sizeBytes), style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        text = "Logical: ${formatBytes(item.logicalSizeBytes)}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = "On-disk est: ${formatBytes(item.onDiskSizeBytes)}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
             if (!item.isDirectory) {
@@ -207,6 +222,22 @@ private fun formatBytes(bytes: Long): String {
         value /= 1024.0
         i++
     }
-    return String.format("%.2f %s", value, units[i])
+    return String.format(Locale.US, "%.2f %s", value, units[i])
+}
+
+private fun StorageItem.isTelegramRelated(): Boolean {
+    val lowerName = name.lowercase(Locale.ROOT)
+    val lowerUri = uri.toString().lowercase(Locale.ROOT)
+
+    val pathMatch = lowerUri.contains("telegram") ||
+        lowerUri.contains("org.telegram.messenger") ||
+        lowerUri.contains("org.telegram.plus")
+
+    val tgFileTypeMatch = lowerName.endsWith(".tgs") ||
+        lowerName.endsWith(".webm") ||
+        lowerName.endsWith(".oga") ||
+        lowerName.endsWith(".opus")
+
+    return pathMatch || tgFileTypeMatch
 }
 

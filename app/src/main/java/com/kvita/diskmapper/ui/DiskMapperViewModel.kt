@@ -19,7 +19,8 @@ data class DiskMapperUiState(
     val selectedFolderUri: Uri? = null,
     val isScanning: Boolean = false,
     val visitedNodes: Long = 0,
-    val rootSizeBytes: Long = 0,
+    val rootLogicalSizeBytes: Long = 0,
+    val rootOnDiskSizeBytes: Long = 0,
     val items: List<StorageItem> = emptyList(),
     val errorMessage: String? = null
 )
@@ -67,7 +68,8 @@ class DiskMapperViewModel : ViewModel() {
                     it.copy(
                     isScanning = false,
                     visitedNodes = scanResult.visitedNodes,
-                    rootSizeBytes = scanResult.rootSizeBytes,
+                    rootLogicalSizeBytes = scanResult.rootLogicalSizeBytes,
+                    rootOnDiskSizeBytes = scanResult.rootOnDiskSizeBytes,
                     items = scanResult.items
                 )
                 }
