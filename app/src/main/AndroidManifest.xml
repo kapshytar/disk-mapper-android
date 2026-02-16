@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        android:maxSdkVersion="999" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <application

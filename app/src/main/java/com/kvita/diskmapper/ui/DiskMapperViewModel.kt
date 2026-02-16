@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.kvita.diskmapper.data.AppStorageStats
 import com.kvita.diskmapper.data.StorageItem
 import com.kvita.diskmapper.data.StorageScanner
 import kotlinx.coroutines.Dispatchers
@@ -19,7 +20,8 @@ import java.io.File
 enum class ScanSource {
     SAF,
     ALL_FILES,
-    SHIZUKU_ANDROID
+    SHIZUKU_ANDROID,
+    APP_STATS
 }
 
 data class DiskMapperUiState(
@@ -271,6 +273,59 @@ class DiskMapperViewModel : ViewModel() {
             } else {
                 UiTrace.vm("deleteItem failed path=${item.absolutePath}")
                 _uiState.update { it.copy(errorMessage = "Failed to delete ${item.name}") }
+            }
+        }
+    }
+
+    fun scanAppStats(context: Context) {
+        UiTrace.vm("scanAppStats start")
+        _uiState.update {
+            it.copy(
+                scanSource = ScanSource.APP_STATS,
+                selectedFolderUri = null,
+                selectedRootPath = "/apps",
+                isScanning = true,
+                visitedNodes = 0,
+                errorMessage = null
+            )
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val appUsages = AppStorageStats.queryAll(context.applicationContext)
+                    val items = AppStorageStats.toStorageItems(appUsages)
+                    val totalBytes = appUsages.sumOf { it.totalBytes }
+                    com.kvita.diskmapper.data.ScanResult(
+                        items = items,
+                        visitedNodes = items.size.toLong(),
+                        rootLogicalSizeBytes = totalBytes,
+                        rootOnDiskSizeBytes = totalBytes
+                    )
+                }
+            }
+
+            result.onSuccess { scanResult ->
+                UiTrace.vm("scanAppStats success apps=${scanResult.items.size} total=${scanResult.rootOnDiskSizeBytes}")
+                _uiState.update {
+                    it.copy(
+                        isScanning = false,
+                        visitedNodes = scanResult.visitedNodes,
+                        rootLogicalSizeBytes = scanResult.rootLogicalSizeBytes,
+                        rootOnDiskSizeBytes = scanResult.rootOnDiskSizeBytes,
+                        items = scanResult.items
+                    )
+                }
+            }.onFailure { throwable ->
+                UiTrace.error("scanAppStats failed", throwable)
+                _uiState.update {
+                    it.copy(
+                        isScanning = false,
+                        errorMessage = if (throwable is SecurityException)
+                            "Usage access required. Enable it in Settings → Apps → Special access → Usage access → Disk Mapper"
+                        else
+                            throwable.message ?: "App stats scan failed"
+                    )
+                }
             }
         }
     }

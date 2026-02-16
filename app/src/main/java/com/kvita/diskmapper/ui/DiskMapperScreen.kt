@@ -149,16 +149,20 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                     IconButton(
                         onClick = {
                             UiTrace.ui("rescan click source=${state.scanSource}")
-                            if (state.scanSource == ScanSource.SHIZUKU_ANDROID) {
-                                vm.scanAndroidPrivateWithShizuku(context, state.shizukuTelegramOnly)
-                            } else {
-                                vm.scan(context)
+                            when (state.scanSource) {
+                                ScanSource.SHIZUKU_ANDROID ->
+                                    vm.scanAndroidPrivateWithShizuku(context, state.shizukuTelegramOnly)
+                                ScanSource.APP_STATS ->
+                                    vm.scanAppStats(context)
+                                else ->
+                                    vm.scan(context)
                             }
                         },
                         enabled = !state.isScanning &&
                             (state.selectedFolderUri != null ||
                                 state.selectedRootPath != null ||
-                                state.scanSource == ScanSource.SHIZUKU_ANDROID)
+                                state.scanSource == ScanSource.SHIZUKU_ANDROID ||
+                                state.scanSource == ScanSource.APP_STATS)
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = "Rescan")
                     }
@@ -200,6 +204,10 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                     val telegramOnly = filter == FileFilter.TELEGRAM
                     UiTrace.ui("action shizuku-scan telegramOnly=$telegramOnly")
                     vm.scanAndroidPrivateWithShizuku(context, telegramOnly)
+                }
+                ActionChip("Apps", enabled = !state.isScanning) {
+                    UiTrace.ui("action app-stats")
+                    vm.scanAppStats(context)
                 }
             }
 

@@ -54,7 +54,24 @@
       "Bash(\"$ADB\" shell \"logcat -d | grep DiskMapperTrace\")",
       "Bash(git merge:*)",
       "Bash(\"$ADB\" install -r \"C:/DiskMapperAndroid/app/build/outputs/apk/debug/app-debug.apk\")",
-      "Bash(\"$ADB\" shell \"logcat -d | grep -iE ''cleaner|diskmapper.*cleaner|lowmem|oom|kill.*kvita|Process.*died''\")"
+      "Bash(\"$ADB\" shell \"logcat -d | grep -iE ''cleaner|diskmapper.*cleaner|lowmem|oom|kill.*kvita|Process.*died''\")",
+      "Bash(\"$ADB\" shell ip route)",
+      "Bash(\"$ADB\" devices)",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 install -r \"C:/DiskMapperAndroid/app/build/outputs/apk/debug/app-debug.apk\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell df -h /data /storage/emulated/0)",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"du -sh /storage/emulated/0/* 2>/dev/null | sort -rh | head -30\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"du -sh /storage/emulated/0/Android/data/* 2>/dev/null | sort -rh | head -15\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"du -sh /data/data/* 2>/dev/null | sort -rh | head -15\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"du -sh /data/media/0 2>/dev/null\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"df -h /data /storage/emulated/0\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"du -sk /storage/emulated/0/* 2>/dev/null | sort -rn | head -30\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"du -sk /storage/emulated/0 2>/dev/null\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"du -sk /data/* 2>/dev/null | sort -rn | head -20\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"du -sk /data/app 2>/dev/null\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"du -sk /data/data 2>/dev/null\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"du -sk /data/media/0 2>/dev/null\")",
+      "Bash(\"$ADB\" -s 192.168.0.103:5555 shell \"pm dump com.kvita.diskmapper | grep -A2 ''requested permissions''\")",
+      "Bash(../../gradlew assembleDebug:*)"
     ]
   }
 }
