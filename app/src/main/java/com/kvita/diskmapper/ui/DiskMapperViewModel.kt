@@ -18,7 +18,8 @@ import java.io.File
 
 enum class ScanSource {
     SAF,
-    ALL_FILES
+    ALL_FILES,
+    SHIZUKU_ANDROID
 }
 
 data class DiskMapperUiState(
@@ -29,12 +30,14 @@ data class DiskMapperUiState(
     val visitedNodes: Long = 0,
     val rootLogicalSizeBytes: Long = 0,
     val rootOnDiskSizeBytes: Long = 0,
+    val shizukuTelegramOnly: Boolean = false,
     val items: List<StorageItem> = emptyList(),
     val errorMessage: String? = null
 )
 
 class DiskMapperViewModel : ViewModel() {
     private val scanner = StorageScanner()
+    private val shizukuBridge = ShizukuBridge()
 
     private val _uiState = MutableStateFlow(DiskMapperUiState())
     val uiState: StateFlow<DiskMapperUiState> = _uiState.asStateFlow()
@@ -76,6 +79,38 @@ class DiskMapperViewModel : ViewModel() {
         scan(context)
     }
 
+    fun scanAndroidPrivateWithShizuku(context: Context, telegramOnly: Boolean) {
+        when (shizukuBridge.ensurePermission()) {
+            ShizukuBridge.PermissionState.SHIZUKU_NOT_RUNNING -> {
+                _uiState.update {
+                    it.copy(errorMessage = "Shizuku is not running. Start Shizuku first.")
+                }
+            }
+            ShizukuBridge.PermissionState.PERMISSION_REQUESTED -> {
+                _uiState.update {
+                    it.copy(errorMessage = "Shizuku permission requested. Confirm and tap again.")
+                }
+            }
+            ShizukuBridge.PermissionState.PERMISSION_DENIED -> {
+                _uiState.update {
+                    it.copy(errorMessage = "Shizuku permission denied.")
+                }
+            }
+            ShizukuBridge.PermissionState.READY -> {
+                _uiState.update {
+                    it.copy(
+                        selectedFolderUri = null,
+                        selectedRootPath = "/storage/emulated/0/Android",
+                        scanSource = ScanSource.SHIZUKU_ANDROID,
+                        shizukuTelegramOnly = telegramOnly,
+                        errorMessage = null
+                    )
+                }
+                scanShizuku(context, telegramOnly)
+            }
+        }
+    }
+
     fun scan(context: Context) {
         val state = _uiState.value
 
@@ -98,6 +133,11 @@ class DiskMapperViewModel : ViewModel() {
                             scanner.scanFileTree(File(rootPath)) { visited ->
                                 _uiState.update { it.copy(visitedNodes = visited) }
                             }
+                        }
+                        ScanSource.SHIZUKU_ANDROID -> {
+                            return@runCatching throw IllegalStateException(
+                                "Use Shizuku scan action for Android/data and Android/obb."
+                            )
                         }
                     }
                 }
@@ -124,15 +164,57 @@ class DiskMapperViewModel : ViewModel() {
         }
     }
 
+    private fun scanShizuku(context: Context, telegramOnly: Boolean) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isScanning = true, visitedNodes = 0, errorMessage = null) }
+
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val payload = shizukuBridge.scanAndroidPrivate(context.applicationContext, telegramOnly)
+                    parseShizukuPayload(payload)
+                }
+            }
+
+            result.onSuccess { items ->
+                val logical = items.sumOf { it.logicalSizeBytes }
+                val onDisk = items.sumOf { it.onDiskSizeBytes }
+                _uiState.update {
+                    it.copy(
+                        isScanning = false,
+                        visitedNodes = items.size.toLong(),
+                        rootLogicalSizeBytes = logical,
+                        rootOnDiskSizeBytes = onDisk,
+                        items = items.sortedByDescending { item -> item.onDiskSizeBytes }
+                    )
+                }
+            }.onFailure { throwable ->
+                _uiState.update {
+                    it.copy(
+                        isScanning = false,
+                        errorMessage = throwable.message ?: "Shizuku scan failed"
+                    )
+                }
+            }
+        }
+    }
+
     fun deleteItem(context: Context, item: StorageItem) {
         viewModelScope.launch(Dispatchers.IO) {
             val ok = if (_uiState.value.scanSource == ScanSource.ALL_FILES && item.absolutePath != null) {
                 scanner.deleteFile(item.absolutePath)
+            } else if (_uiState.value.scanSource == ScanSource.SHIZUKU_ANDROID && item.absolutePath != null) {
+                runCatching {
+                    shizukuBridge.deleteFile(context.applicationContext, item.absolutePath)
+                }.getOrDefault(false)
             } else {
                 scanner.delete(context.applicationContext, item.uri)
             }
             if (ok) {
-                scan(context)
+                if (_uiState.value.scanSource == ScanSource.SHIZUKU_ANDROID) {
+                    scanShizuku(context, _uiState.value.shizukuTelegramOnly)
+                } else {
+                    scan(context)
+                }
             } else {
                 _uiState.update { it.copy(errorMessage = "Failed to delete ${item.name}") }
             }
@@ -141,6 +223,32 @@ class DiskMapperViewModel : ViewModel() {
 
     fun clearError() {
         _uiState.update { it.copy(errorMessage = null) }
+    }
+
+    private fun parseShizukuPayload(payload: String): List<StorageItem> {
+        if (payload.isBlank()) return emptyList()
+        val separator = '\u001F'
+        return payload
+            .lineSequence()
+            .mapNotNull { line ->
+                val parts = line.split(separator)
+                if (parts.size < 5) return@mapNotNull null
+                val path = parts[0]
+                val name = parts[1]
+                val logical = parts[2].toLongOrNull() ?: 0L
+                val onDisk = parts[3].toLongOrNull() ?: logical
+                val isDirectory = parts[4] == "1"
+                StorageItem(
+                    uri = Uri.fromFile(File(path)),
+                    absolutePath = path,
+                    name = name,
+                    logicalSizeBytes = logical,
+                    onDiskSizeBytes = onDisk,
+                    isDirectory = isDirectory,
+                    mimeType = null
+                )
+            }
+            .toList()
     }
 }
 

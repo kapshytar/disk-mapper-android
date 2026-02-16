@@ -95,7 +95,19 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
             TopAppBar(
                 title = { Text("Disk Mapper") },
                 actions = {
-                    IconButton(onClick = { vm.scan(context) }, enabled = !state.isScanning && state.selectedFolderUri != null) {
+                    IconButton(
+                        onClick = {
+                            if (state.scanSource == ScanSource.SHIZUKU_ANDROID) {
+                                vm.scanAndroidPrivateWithShizuku(context, state.shizukuTelegramOnly)
+                            } else {
+                                vm.scan(context)
+                            }
+                        },
+                        enabled = !state.isScanning &&
+                            (state.selectedFolderUri != null ||
+                                state.selectedRootPath != null ||
+                                state.scanSource == ScanSource.SHIZUKU_ANDROID)
+                    ) {
                         Icon(Icons.Default.Refresh, contentDescription = "Rescan")
                     }
                 }
@@ -125,6 +137,15 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                     enabled = !state.isScanning
                 ) {
                     Text("Root scan")
+                }
+                Button(
+                    onClick = {
+                        val telegramOnly = filter == FileFilter.TELEGRAM
+                        vm.scanAndroidPrivateWithShizuku(context, telegramOnly)
+                    },
+                    enabled = !state.isScanning
+                ) {
+                    Text("Shizuku Android/")
                 }
                 if (state.selectedFolderUri != null) {
                     Column(modifier = Modifier.align(Alignment.CenterVertically)) {
