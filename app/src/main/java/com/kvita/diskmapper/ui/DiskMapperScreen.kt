@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -209,12 +210,11 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
             }
 
             if (treeRows.isNotEmpty()) {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(0.dp)) {
                     items(treeRows.take(500), key = { it.node.path }) { row ->
                         ItemCard(
-                            label = row.node.name.ifBlank { row.node.item?.name ?: "(folder)" },
+                            label = row.guide + row.node.name.ifBlank { row.node.item?.name ?: "(folder)" },
                             item = row.node.item,
-                            depth = row.depth,
                             canExpand = row.node.children.isNotEmpty(),
                             expanded = expandedMap[row.node.path] ?: false,
                             displayOnDiskBytes = row.node.onDiskSizeBytes,
@@ -228,12 +228,11 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                     }
                 }
             } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(0.dp)) {
                     items(filteredItems.take(300), key = { it.uri.toString() }) { item ->
                         ItemCard(
                             label = item.name,
                             item = item,
-                            depth = 0,
                             canExpand = false,
                             expanded = false,
                             displayOnDiskBytes = item.onDiskSizeBytes,
@@ -274,7 +273,6 @@ private fun FilterChip(title: String, selected: Boolean, onClick: () -> Unit) {
 private fun ItemCard(
     label: String,
     item: StorageItem?,
-    depth: Int,
     canExpand: Boolean,
     expanded: Boolean,
     displayOnDiskBytes: Long,
@@ -292,8 +290,7 @@ private fun ItemCard(
     ) {
         Row(
             modifier = Modifier
-                .weight(1f)
-                .padding(start = (depth * 10).dp),
+                .weight(1f),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -310,8 +307,12 @@ private fun ItemCard(
             style = MaterialTheme.typography.bodySmall
         )
         if (item != null && !item.isDirectory) {
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete")
+            IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Delete",
+                    modifier = Modifier.size(16.dp)
+                )
             }
         }
     }
@@ -380,7 +381,7 @@ private data class TreeNode(
 
 private data class TreeRow(
     val node: TreeNode,
-    val depth: Int
+    val guide: String
 )
 
 private fun buildTree(items: List<StorageItem>, basePath: String?): List<TreeNode> {
@@ -422,8 +423,16 @@ private fun buildTree(items: List<StorageItem>, basePath: String?): List<TreeNod
 
 private fun flattenTree(roots: List<TreeNode>, expanded: Map<String, Boolean>): List<TreeRow> {
     val out = mutableListOf<TreeRow>()
-    for (root in roots.sortedByDescending { it.onDiskSizeBytes }) {
-        appendNode(root, 0, expanded, out)
+    val sortedRoots = roots.sortedByDescending { it.onDiskSizeBytes }
+    for ((index, root) in sortedRoots.withIndex()) {
+        appendNode(
+            node = root,
+            depth = 0,
+            expanded = expanded,
+            out = out,
+            ancestorHasNext = emptyList(),
+            isLast = index == sortedRoots.lastIndex
+        )
     }
     return out
 }
@@ -432,13 +441,31 @@ private fun appendNode(
     node: TreeNode,
     depth: Int,
     expanded: Map<String, Boolean>,
-    out: MutableList<TreeRow>
+    out: MutableList<TreeRow>,
+    ancestorHasNext: List<Boolean>,
+    isLast: Boolean
 ) {
-    out += TreeRow(node, depth)
+    val guide = buildString {
+        for (hasNext in ancestorHasNext) {
+            append(if (hasNext) "│ " else "  ")
+        }
+        if (depth > 0) {
+            append(if (isLast) "└ " else "├ ")
+        }
+    }
+    out += TreeRow(node, guide)
     val isExpanded = expanded[node.path] ?: false
     if (isExpanded) {
-        for (child in node.children.sortedByDescending { it.onDiskSizeBytes }) {
-            appendNode(child, depth + 1, expanded, out)
+        val children = node.children.sortedByDescending { it.onDiskSizeBytes }
+        for ((index, child) in children.withIndex()) {
+            appendNode(
+                node = child,
+                depth = depth + 1,
+                expanded = expanded,
+                out = out,
+                ancestorHasNext = ancestorHasNext + (!isLast),
+                isLast = index == children.lastIndex
+            )
         }
     }
 }
