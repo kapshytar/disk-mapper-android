@@ -203,10 +203,13 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(treeRows.take(500), key = { it.node.path }) { row ->
                         ItemCard(
+                            label = row.node.name.ifBlank { row.node.item?.name ?: "(folder)" },
                             item = row.node.item,
                             depth = row.depth,
                             canExpand = row.node.children.isNotEmpty(),
                             expanded = expandedMap[row.node.path] ?: false,
+                            displayOnDiskBytes = row.node.onDiskSizeBytes,
+                            displayLogicalBytes = row.node.logicalSizeBytes,
                             onToggleExpand = {
                                 val current = expandedMap[row.node.path] ?: false
                                 expandedMap[row.node.path] = !current
@@ -219,10 +222,13 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(filteredItems.take(300), key = { it.uri.toString() }) { item ->
                         ItemCard(
+                            label = item.name,
                             item = item,
                             depth = 0,
                             canExpand = false,
                             expanded = false,
+                            displayOnDiskBytes = item.onDiskSizeBytes,
+                            displayLogicalBytes = item.logicalSizeBytes,
                             onToggleExpand = {},
                             onDelete = { pendingDelete = item }
                         )
@@ -257,10 +263,13 @@ private fun FilterChip(title: String, selected: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun ItemCard(
+    label: String,
     item: StorageItem?,
     depth: Int,
     canExpand: Boolean,
     expanded: Boolean,
+    displayOnDiskBytes: Long,
+    displayLogicalBytes: Long,
     onToggleExpand: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -285,10 +294,10 @@ private fun ItemCard(
             } else {
                 Text("•", style = MaterialTheme.typography.bodySmall)
             }
-            Text(item?.name ?: "(folder)", maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+            Text(label, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
         }
         Text(
-            text = "${formatBytes(item?.onDiskSizeBytes ?: 0L)} | ${formatBytes(item?.logicalSizeBytes ?: 0L)}",
+            text = "${formatBytes(displayOnDiskBytes)} | ${formatBytes(displayLogicalBytes)}",
             style = MaterialTheme.typography.bodySmall
         )
         if (item != null && !item.isDirectory) {
@@ -355,6 +364,7 @@ private data class TreeNode(
     val path: String,
     val name: String,
     var item: StorageItem? = null,
+    var logicalSizeBytes: Long = 0L,
     var onDiskSizeBytes: Long = 0L,
     val children: MutableList<TreeNode> = mutableListOf()
 )
@@ -392,6 +402,7 @@ private fun buildTree(items: List<StorageItem>, basePath: String?): List<TreeNod
         }
 
         parent.item = item
+        parent.logicalSizeBytes = item.logicalSizeBytes
         parent.onDiskSizeBytes = item.onDiskSizeBytes
     }
 
@@ -429,11 +440,15 @@ private fun sortNode(node: TreeNode) {
 }
 
 private fun aggregateTree(node: TreeNode): Long {
-    var sum = node.item?.onDiskSizeBytes ?: 0L
+    var logicalSum = node.item?.logicalSizeBytes ?: 0L
+    var onDiskSum = node.item?.onDiskSizeBytes ?: 0L
     for (child in node.children) {
-        sum += aggregateTree(child)
+        aggregateTree(child)
+        logicalSum += child.logicalSizeBytes
+        onDiskSum += child.onDiskSizeBytes
     }
-    node.onDiskSizeBytes = maxOf(node.onDiskSizeBytes, sum)
+    node.logicalSizeBytes = maxOf(node.logicalSizeBytes, logicalSum)
+    node.onDiskSizeBytes = maxOf(node.onDiskSizeBytes, onDiskSum)
     return node.onDiskSizeBytes
 }
 
