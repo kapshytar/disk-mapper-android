@@ -10,6 +10,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Stabilize Android builds on GitHub runners (D8 was OOM at 512 MiB).
+      GRADLE_OPTS: -Dorg.gradle.jvmargs='-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8'
 
     steps:
       - name: Checkout
@@ -35,7 +38,7 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace
+        run: gradle :app:assembleDebug --stacktrace --no-daemon --max-workers=2
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
