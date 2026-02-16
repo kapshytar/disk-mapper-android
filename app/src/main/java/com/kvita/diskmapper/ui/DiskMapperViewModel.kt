@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 
 enum class ScanSource {
     SAF,
@@ -288,7 +289,7 @@ class DiskMapperViewModel : ViewModel() {
             it.copy(
                 scanSource = ScanSource.APP_STATS,
                 selectedFolderUri = null,
-                selectedRootPath = "/apps",
+                selectedRootPath = "/storage-map",
                 isScanning = true,
                 visitedNodes = 0,
                 errorMessage = null
@@ -311,24 +312,33 @@ class DiskMapperViewModel : ViewModel() {
                     val totalUsed = full.categories.totalUsed
                     val fallbackTotal = items.sumOf { it.onDiskSizeBytes }
                     val rootBytes = if (totalUsed > 0L) totalUsed else fallbackTotal
+                    val visibleAppsTotal = full.apps.sumOf { it.totalBytes }
+                    val expectedAppsTotal = full.categories.appSize + full.categories.appDataSize + full.categories.appCacheSize
+                    val visibilityNote = if (expectedAppsTotal > 0L) {
+                        val pct = (visibleAppsTotal * 100.0 / expectedAppsTotal.toDouble())
+                        "Apps visible: ${formatBytes(visibleAppsTotal)} / ${formatBytes(expectedAppsTotal)} (${String.format(java.util.Locale.US, "%.1f", pct)}%)"
+                    } else {
+                        null
+                    }
                     com.kvita.diskmapper.data.ScanResult(
                         items = items,
                         visitedNodes = items.size.toLong(),
                         rootLogicalSizeBytes = rootBytes,
                         rootOnDiskSizeBytes = rootBytes
-                    )
+                    ) to visibilityNote
                 }
             }
 
-            result.onSuccess { scanResult ->
-                UiTrace.vm("scanAppStats success items=${scanResult.items.size} total=${scanResult.rootOnDiskSizeBytes}")
+            result.onSuccess { (scanResult, visibilityNote) ->
+                UiTrace.vm("scanAppStats success items=${scanResult.items.size} total=${scanResult.rootOnDiskSizeBytes} note=$visibilityNote")
                 _uiState.update {
                     it.copy(
                         isScanning = false,
                         visitedNodes = scanResult.visitedNodes,
                         rootLogicalSizeBytes = scanResult.rootLogicalSizeBytes,
                         rootOnDiskSizeBytes = scanResult.rootOnDiskSizeBytes,
-                        items = scanResult.items
+                        items = scanResult.items,
+                        shizukuDiagnostics = visibilityNote
                     )
                 }
             }.onFailure { throwable ->
@@ -443,6 +453,18 @@ class DiskMapperViewModel : ViewModel() {
             rootLogicalSizeBytes = newLogical.coerceAtLeast(0L),
             rootOnDiskSizeBytes = newOnDisk.coerceAtLeast(0L)
         )
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes <= 0L) return "0 B"
+        val units = arrayOf("B", "KB", "MB", "GB", "TB")
+        var value = bytes.toDouble()
+        var i = 0
+        while (value >= 1024.0 && i < units.lastIndex) {
+            value /= 1024.0
+            i++
+        }
+        return String.format(Locale.US, "%.1f %s", value, units[i])
     }
 }
 

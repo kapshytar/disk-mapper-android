@@ -140,7 +140,7 @@ object AppStorageStats {
             if (bytes <= 0) return
             items += StorageItem(
                 uri = Uri.parse("category://$path"),
-                absolutePath = "/storage-map/$path",
+                absolutePath = "/storage-map/categories/$path",
                 name = name,
                 logicalSizeBytes = bytes,
                 onDiskSizeBytes = bytes,
@@ -162,7 +162,7 @@ object AppStorageStats {
         if (cat.totalFree > 0) {
             items += StorageItem(
                 uri = Uri.parse("category://free"),
-                absolutePath = "/storage-map/free",
+                absolutePath = "/storage-map/categories/free",
                 name = "Free space",
                 logicalSizeBytes = cat.totalFree,
                 onDiskSizeBytes = cat.totalFree,
@@ -173,15 +173,49 @@ object AppStorageStats {
 
         // Per-app detail items
         for (app in info.apps) {
+            val appPath = "/storage-map/per-app/${app.packageName}"
             items += StorageItem(
                 uri = Uri.parse("package://${app.packageName}"),
-                absolutePath = "/storage-map/per-app/${app.packageName}",
+                absolutePath = appPath,
                 name = app.label,
                 logicalSizeBytes = app.totalBytes,
                 onDiskSizeBytes = app.totalBytes,
                 isDirectory = true,
                 mimeType = null
             )
+            if (app.appBytes > 0) {
+                items += StorageItem(
+                    uri = Uri.parse("package://${app.packageName}/apk"),
+                    absolutePath = "$appPath/apk",
+                    name = "APK",
+                    logicalSizeBytes = app.appBytes,
+                    onDiskSizeBytes = app.appBytes,
+                    isDirectory = false,
+                    mimeType = null
+                )
+            }
+            if (app.dataBytes > 0) {
+                items += StorageItem(
+                    uri = Uri.parse("package://${app.packageName}/data"),
+                    absolutePath = "$appPath/data",
+                    name = "Data",
+                    logicalSizeBytes = app.dataBytes,
+                    onDiskSizeBytes = app.dataBytes,
+                    isDirectory = false,
+                    mimeType = null
+                )
+            }
+            if (app.cacheBytes > 0) {
+                items += StorageItem(
+                    uri = Uri.parse("package://${app.packageName}/cache"),
+                    absolutePath = "$appPath/cache",
+                    name = "Cache",
+                    logicalSizeBytes = app.cacheBytes,
+                    onDiskSizeBytes = app.cacheBytes,
+                    isDirectory = false,
+                    mimeType = null
+                )
+            }
         }
 
         return items

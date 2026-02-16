@@ -650,15 +650,17 @@ private fun sortNode(node: TreeNode) {
 }
 
 private fun aggregateTree(node: TreeNode): Long {
-    var logicalSum = node.item?.logicalSizeBytes ?: 0L
-    var onDiskSum = node.item?.onDiskSizeBytes ?: 0L
+    val itemLogical = node.item?.logicalSizeBytes ?: 0L
+    val itemOnDisk = node.item?.onDiskSizeBytes ?: 0L
+    var logicalSum = if (node.children.isEmpty()) itemLogical else 0L
+    var onDiskSum = if (node.children.isEmpty()) itemOnDisk else 0L
     for (child in node.children) {
         aggregateTree(child)
         logicalSum += child.logicalSizeBytes
         onDiskSum += child.onDiskSizeBytes
     }
-    node.logicalSizeBytes = maxOf(node.logicalSizeBytes, logicalSum)
-    node.onDiskSizeBytes = maxOf(node.onDiskSizeBytes, onDiskSum)
+    node.logicalSizeBytes = maxOf(node.logicalSizeBytes, logicalSum, itemLogical)
+    node.onDiskSizeBytes = maxOf(node.onDiskSizeBytes, onDiskSum, itemOnDisk)
     return node.onDiskSizeBytes
 }
 
