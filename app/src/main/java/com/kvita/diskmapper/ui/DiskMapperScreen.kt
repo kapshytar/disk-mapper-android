@@ -5,8 +5,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -90,15 +88,6 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     var filter by remember { mutableStateOf(FileFilter.ALL) }
     var pendingDelete by remember { mutableStateOf<StorageItem?>(null) }
     val expandedMap = remember { mutableStateMapOf<String, Boolean>() }
-
-    val folderPicker = rememberLauncherForActivityResult(OpenDocumentTree()) { uri: Uri? ->
-        if (uri == null) {
-            UiTrace.ui("folderPicker canceled")
-        } else {
-            UiTrace.ui("folderPicker selected uri=$uri")
-            vm.selectFolder(context, uri)
-        }
-    }
 
     LaunchedEffect(Unit) {
         UiTrace.ui("screen opened")
@@ -185,13 +174,6 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                ActionChip(
-                    title = if (state.selectedFolderUri == null) "Folder" else "Change",
-                    enabled = !state.isScanning
-                ) {
-                    UiTrace.ui("action select-folder")
-                    folderPicker.launch(null)
-                }
                 ActionChip("Root scan", enabled = !state.isScanning) {
                     UiTrace.ui("action root-scan click")
                     if (hasAllFilesAccess()) {
