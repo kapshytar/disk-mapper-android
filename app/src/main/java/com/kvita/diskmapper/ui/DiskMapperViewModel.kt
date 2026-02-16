@@ -101,26 +101,29 @@ class DiskMapperViewModel : ViewModel() {
         scan(context)
     }
 
-    fun scanAndroidPrivateWithShizuku(context: Context, telegramOnly: Boolean) {
+    fun scanAndroidPrivateWithShizuku(context: Context, telegramOnly: Boolean): ShizukuBridge.PermissionState {
         UiTrace.vm("scanAndroidPrivateWithShizuku telegramOnly=$telegramOnly")
-        when (shizukuBridge.ensurePermission()) {
+        return when (val state = shizukuBridge.ensurePermission()) {
             ShizukuBridge.PermissionState.SHIZUKU_NOT_RUNNING -> {
                 UiTrace.vm("shizuku state=NOT_RUNNING")
                 _uiState.update {
                     it.copy(errorMessage = "Shizuku is not running. Start Shizuku first.")
                 }
+                state
             }
             ShizukuBridge.PermissionState.PERMISSION_REQUESTED -> {
                 UiTrace.vm("shizuku state=PERMISSION_REQUESTED")
                 _uiState.update {
                     it.copy(errorMessage = "Shizuku permission requested. Confirm and tap again.")
                 }
+                state
             }
             ShizukuBridge.PermissionState.PERMISSION_DENIED -> {
                 UiTrace.vm("shizuku state=PERMISSION_DENIED")
                 _uiState.update {
                     it.copy(errorMessage = "Shizuku permission denied.")
                 }
+                state
             }
             ShizukuBridge.PermissionState.READY -> {
                 UiTrace.vm("shizuku state=READY")
@@ -135,6 +138,7 @@ class DiskMapperViewModel : ViewModel() {
                     )
                 }
                 scanShizuku(context, telegramOnly)
+                state
             }
         }
     }

@@ -42,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -57,6 +58,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kvita.diskmapper.data.StorageItem
 import java.util.Locale
@@ -87,11 +91,25 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     val snackbarHostState = remember { SnackbarHostState() }
     var filter by remember { mutableStateOf(FileFilter.ALL) }
     var pendingDelete by remember { mutableStateOf<StorageItem?>(null) }
+    var pendingShizukuRetry by remember { mutableStateOf(false) }
     val expandedMap = remember { mutableStateMapOf<String, Boolean>() }
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     LaunchedEffect(Unit) {
         UiTrace.ui("screen opened")
         vm.restorePersistedFolder(context)
+    }
+
+    DisposableEffect(lifecycleOwner, pendingShizukuRetry, filter) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && pendingShizukuRetry) {
+                UiTrace.ui("auto-retry shizuku scan on resume")
+                pendingShizukuRetry = false
+                vm.scanAndroidPrivateWithShizuku(context, filter == FileFilter.TELEGRAM)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     val filteredItems = remember(state.items, filter) {
@@ -186,7 +204,15 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 ActionChip("Shizuku", enabled = !state.isScanning) {
                     val telegramOnly = filter == FileFilter.TELEGRAM
                     UiTrace.ui("action shizuku-scan telegramOnly=$telegramOnly")
-                    vm.scanAndroidPrivateWithShizuku(context, telegramOnly)
+                    when (vm.scanAndroidPrivateWithShizuku(context, telegramOnly)) {
+                        ShizukuBridge.PermissionState.READY,
+                        ShizukuBridge.PermissionState.PERMISSION_DENIED -> Unit
+                        ShizukuBridge.PermissionState.PERMISSION_REQUESTED,
+                        ShizukuBridge.PermissionState.SHIZUKU_NOT_RUNNING -> {
+                            pendingShizukuRetry = openShizukuApp(context)
+                            UiTrace.ui("open shizuku app pendingRetry=$pendingShizukuRetry")
+                        }
+                    }
                 }
                 ActionChip("Apps", enabled = !state.isScanning) {
                     UiTrace.ui("action app-stats")
@@ -644,6 +670,16 @@ private fun aggregateTree(node: TreeNode): Long {
     node.logicalSizeBytes = maxOf(node.logicalSizeBytes, logicalSum, itemLogical)
     node.onDiskSizeBytes = maxOf(node.onDiskSizeBytes, onDiskSum, itemOnDisk)
     return node.onDiskSizeBytes
+}
+
+private fun openShizukuApp(context: android.content.Context): Boolean {
+    val launch = context.packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+    if (launch != null) {
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(launch) }
+        return true
+    }
+    return false
 }
 
 private fun toRelativePath(absPath: String, basePath: String?): String {
