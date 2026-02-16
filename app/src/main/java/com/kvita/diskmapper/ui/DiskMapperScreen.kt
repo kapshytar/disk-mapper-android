@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -379,7 +378,7 @@ private fun TreeIndent(
     Row(verticalAlignment = Alignment.CenterVertically) {
         for (hasNext in ancestorHasNext) {
             Box(modifier = Modifier.size(step, 20.dp)) {
-                androidx.compose.foundation.Canvas(modifier = Modifier.matchParentSize()) {
+                androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
                     if (hasNext) {
                         val x = size.width / 2f
                         drawLine(
@@ -393,7 +392,7 @@ private fun TreeIndent(
             }
         }
         Box(modifier = Modifier.size(step, 20.dp)) {
-            androidx.compose.foundation.Canvas(modifier = Modifier.matchParentSize()) {
+            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
                 val x = size.width / 2f
                 val yMid = size.height / 2f
                 val color = Color(0xFF7A7A7A)
