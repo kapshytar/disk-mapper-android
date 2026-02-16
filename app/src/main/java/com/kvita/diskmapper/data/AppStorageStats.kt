@@ -162,7 +162,7 @@ object AppStorageStats {
         if (cat.totalFree > 0) {
             items += StorageItem(
                 uri = Uri.parse("category://free"),
-                absolutePath = "/storage-map/categories/free",
+                absolutePath = "/storage-map/free",
                 name = "Free space",
                 logicalSizeBytes = cat.totalFree,
                 onDiskSizeBytes = cat.totalFree,

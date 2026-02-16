@@ -316,7 +316,12 @@ class DiskMapperViewModel : ViewModel() {
                     val expectedAppsTotal = full.categories.appSize + full.categories.appDataSize + full.categories.appCacheSize
                     val visibilityNote = if (expectedAppsTotal > 0L) {
                         val pct = (visibleAppsTotal * 100.0 / expectedAppsTotal.toDouble())
-                        "Apps visible: ${formatBytes(visibleAppsTotal)} / ${formatBytes(expectedAppsTotal)} (${String.format(java.util.Locale.US, "%.1f", pct)}%)"
+                        val pctText = String.format(java.util.Locale.US, "%.1f", pct)
+                        if (pct < 5.0) {
+                            "Apps visible: ${formatBytes(visibleAppsTotal)} / ${formatBytes(expectedAppsTotal)} ($pctText%). Check Usage Access permission for fuller per-app list."
+                        } else {
+                            "Apps visible: ${formatBytes(visibleAppsTotal)} / ${formatBytes(expectedAppsTotal)} ($pctText%)"
+                        }
                     } else {
                         null
                     }
