@@ -71,6 +71,12 @@ class ShizukuBridge {
         }
     }
 
+    suspend fun diskStats(context: Context): String {
+        return withService(context) { service ->
+            service.diskStats()
+        }
+    }
+
     private suspend fun <T> withService(
         context: Context,
         block: (IShizukuCleanerService) -> T

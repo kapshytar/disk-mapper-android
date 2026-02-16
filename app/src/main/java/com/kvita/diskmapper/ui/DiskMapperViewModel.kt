@@ -179,6 +179,11 @@ class DiskMapperViewModel : ViewModel() {
                                 "Use Shizuku scan action for Android/data and Android/obb."
                             )
                         }
+                        ScanSource.APP_STATS -> {
+                            return@runCatching throw IllegalStateException(
+                                "Use Apps action for per-app storage stats."
+                            )
+                        }
                     }
                 }
             }
@@ -292,20 +297,31 @@ class DiskMapperViewModel : ViewModel() {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val appUsages = AppStorageStats.queryAll(context.applicationContext)
-                    val items = AppStorageStats.toStorageItems(appUsages)
-                    val totalBytes = appUsages.sumOf { it.totalBytes }
+                    val diskStatsRaw = if (shizukuBridge.canUseWithoutRequest()) {
+                        runCatching {
+                            shizukuBridge.diskStats(context.applicationContext)
+                        }.onFailure {
+                            UiTrace.error("scanAppStats shizuku diskstats failed", it)
+                        }.getOrNull()
+                    } else {
+                        null
+                    }
+                    val full = AppStorageStats.queryFull(context.applicationContext, diskStatsRaw)
+                    val items = AppStorageStats.toStorageItems(full)
+                    val totalUsed = full.categories.totalUsed
+                    val fallbackTotal = items.sumOf { it.onDiskSizeBytes }
+                    val rootBytes = if (totalUsed > 0L) totalUsed else fallbackTotal
                     com.kvita.diskmapper.data.ScanResult(
                         items = items,
                         visitedNodes = items.size.toLong(),
-                        rootLogicalSizeBytes = totalBytes,
-                        rootOnDiskSizeBytes = totalBytes
+                        rootLogicalSizeBytes = rootBytes,
+                        rootOnDiskSizeBytes = rootBytes
                     )
                 }
             }
 
             result.onSuccess { scanResult ->
-                UiTrace.vm("scanAppStats success apps=${scanResult.items.size} total=${scanResult.rootOnDiskSizeBytes}")
+                UiTrace.vm("scanAppStats success items=${scanResult.items.size} total=${scanResult.rootOnDiskSizeBytes}")
                 _uiState.update {
                     it.copy(
                         isScanning = false,

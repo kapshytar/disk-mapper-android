@@ -124,6 +124,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
         when (state.scanSource) {
             ScanSource.ALL_FILES -> state.selectedRootPath
             ScanSource.SHIZUKU_ANDROID -> "/storage/emulated/0/Android"
+            ScanSource.APP_STATS -> "/storage-map"
             ScanSource.SAF -> null
         }
     }

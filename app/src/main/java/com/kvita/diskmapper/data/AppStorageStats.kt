@@ -2,41 +2,110 @@ package com.kvita.diskmapper.data
 
 import android.app.usage.StorageStatsManager
 import android.content.Context
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.storage.StorageManager
 import com.kvita.diskmapper.ui.UiTrace
-import java.util.UUID
 
 /**
- * Uses [StorageStatsManager] (requires PACKAGE_USAGE_STATS) to enumerate
- * per-app storage: app size, data size, cache size.
+ * Combines two data sources to show complete storage picture:
  *
- * This covers the ~85 GB hidden in /data/app + /data/data that the file-tree
- * scan cannot see without root.
+ * 1. **Category totals** via `dumpsys diskstats` — gives accurate system-level
+ *    breakdown (Apps 32GB, App Data 25GB, Photos 2GB, System 20GB, etc.)
+ *
+ * 2. **Per-app breakdown** via [StorageStatsManager] — shows individual app
+ *    sizes (APK + data + cache) for apps accessible to the current user.
  */
 object AppStorageStats {
 
     data class AppUsage(
         val packageName: String,
         val label: String,
-        val appBytes: Long,      // APK + libs
-        val dataBytes: Long,     // data + cache
-        val cacheBytes: Long,    // cache subset
-        val totalBytes: Long     // app + data
+        val appBytes: Long,
+        val dataBytes: Long,
+        val cacheBytes: Long,
+        val totalBytes: Long
     )
 
+    /** Category-level storage totals from dumpsys diskstats. */
+    data class CategoryBreakdown(
+        val appSize: Long = 0,
+        val appDataSize: Long = 0,
+        val appCacheSize: Long = 0,
+        val photosSize: Long = 0,
+        val videosSize: Long = 0,
+        val audioSize: Long = 0,
+        val downloadsSize: Long = 0,
+        val systemSize: Long = 0,
+        val otherSize: Long = 0,
+        val totalUsed: Long = 0,
+        val totalCapacity: Long = 0,
+        val totalFree: Long = 0
+    )
+
+    data class FullStorageInfo(
+        val categories: CategoryBreakdown,
+        val apps: List<AppUsage>
+    )
+
+    fun queryFull(context: Context, diskStatsRaw: String? = null): FullStorageInfo {
+        val categories = if (!diskStatsRaw.isNullOrBlank()) {
+            parseDiskStats(diskStatsRaw)
+        } else {
+            queryCategoryBreakdown()
+        }
+        val apps = queryPerApp(context)
+        return FullStorageInfo(categories, apps)
+    }
+
     /**
-     * Returns per-app storage usage sorted by total descending.
-     * Requires the user to have granted "Usage access" in Settings.
+     * Parse `dumpsys diskstats` for category-level totals.
+     * No special permissions needed.
      */
-    fun queryAll(context: Context): List<AppUsage> {
+    private fun queryCategoryBreakdown(): CategoryBreakdown {
+        return try {
+            val process = ProcessBuilder("sh", "-c", "dumpsys diskstats 2>/dev/null")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            process.waitFor()
+            parseDiskStats(output)
+        } catch (e: Exception) {
+            UiTrace.error("queryCategoryBreakdown failed", e)
+            CategoryBreakdown()
+        }
+    }
+
+    internal fun parseDiskStats(output: String): CategoryBreakdown {
+        fun extract(key: String): Long {
+            val regex = Regex("$key:\\s*(\\d+)")
+            return regex.find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+        }
+        val dataFreeMatch = Regex("Data-Free:\\s*(\\d+)K\\s*/\\s*(\\d+)K").find(output)
+        val freeK = dataFreeMatch?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+        val totalK = dataFreeMatch?.groupValues?.get(2)?.toLongOrNull() ?: 0L
+
+        return CategoryBreakdown(
+            appSize = extract("App Size"),
+            appDataSize = extract("App Data Size"),
+            appCacheSize = extract("App Cache Size"),
+            photosSize = extract("Photos Size"),
+            videosSize = extract("Videos Size"),
+            audioSize = extract("Audio Size"),
+            downloadsSize = extract("Downloads Size"),
+            systemSize = extract("System Size"),
+            otherSize = extract("Other Size"),
+            totalCapacity = totalK * 1024L,
+            totalFree = freeK * 1024L,
+            totalUsed = (totalK - freeK) * 1024L
+        )
+    }
+
+    private fun queryPerApp(context: Context): List<AppUsage> {
         val ssm = context.getSystemService(Context.STORAGE_STATS_SERVICE) as? StorageStatsManager
             ?: return emptyList()
         val pm = context.packageManager
         val uuid = StorageManager.UUID_DEFAULT
-
         val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
         val result = ArrayList<AppUsage>(apps.size)
 
@@ -53,36 +122,68 @@ object AppStorageStats {
                 } catch (_: Exception) {
                     app.packageName
                 }
-                result += AppUsage(
-                    packageName = app.packageName,
-                    label = label,
-                    appBytes = appBytes,
-                    dataBytes = dataBytes,
-                    cacheBytes = cacheBytes,
-                    totalBytes = total
-                )
-            } catch (e: Exception) {
-                // SecurityException if no usage access, or PackageManager.NameNotFoundException
-                UiTrace.error("AppStorageStats skip ${app.packageName}", e)
+                result += AppUsage(app.packageName, label, appBytes, dataBytes, cacheBytes, total)
+            } catch (_: Exception) {
+                // skip silently
             }
         }
-
         result.sortByDescending { it.totalBytes }
         return result
     }
 
-    /** Convert [AppUsage] list to [StorageItem] list for the tree UI. */
-    fun toStorageItems(apps: List<AppUsage>): List<StorageItem> {
-        return apps.map { app ->
-            StorageItem(
+    /** Convert full info to StorageItems for tree UI. */
+    fun toStorageItems(info: FullStorageInfo): List<StorageItem> {
+        val items = ArrayList<StorageItem>()
+        val cat = info.categories
+
+        fun addCategory(name: String, bytes: Long, path: String) {
+            if (bytes <= 0) return
+            items += StorageItem(
+                uri = Uri.parse("category://$path"),
+                absolutePath = "/storage-map/$path",
+                name = name,
+                logicalSizeBytes = bytes,
+                onDiskSizeBytes = bytes,
+                isDirectory = true,
+                mimeType = null
+            )
+        }
+
+        addCategory("Apps (APK)", cat.appSize, "apps-apk")
+        addCategory("App Data", cat.appDataSize, "apps-data")
+        addCategory("App Cache", cat.appCacheSize, "apps-cache")
+        addCategory("Photos", cat.photosSize, "photos")
+        addCategory("Videos", cat.videosSize, "videos")
+        addCategory("Audio", cat.audioSize, "audio")
+        addCategory("Downloads", cat.downloadsSize, "downloads")
+        addCategory("System", cat.systemSize, "system")
+        addCategory("Other", cat.otherSize, "other")
+
+        if (cat.totalFree > 0) {
+            items += StorageItem(
+                uri = Uri.parse("category://free"),
+                absolutePath = "/storage-map/free",
+                name = "Free space",
+                logicalSizeBytes = cat.totalFree,
+                onDiskSizeBytes = cat.totalFree,
+                isDirectory = false,
+                mimeType = null
+            )
+        }
+
+        // Per-app detail items
+        for (app in info.apps) {
+            items += StorageItem(
                 uri = Uri.parse("package://${app.packageName}"),
-                absolutePath = "/apps/${app.packageName}",
-                name = "${app.label} (${app.packageName})",
+                absolutePath = "/storage-map/per-app/${app.packageName}",
+                name = app.label,
                 logicalSizeBytes = app.totalBytes,
                 onDiskSizeBytes = app.totalBytes,
                 isDirectory = true,
                 mimeType = null
             )
         }
+
+        return items
     }
 }

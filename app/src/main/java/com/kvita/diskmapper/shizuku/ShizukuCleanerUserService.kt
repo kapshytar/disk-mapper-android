@@ -119,6 +119,17 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
         return "uid=$uid;dataEntries=$dataEntries;obbEntries=$obbEntries;duDataMb=$dataDuMb;duObbMb=$obbDuMb"
     }
 
+    override fun diskStats(): String {
+        return runCatching {
+            val process = ProcessBuilder("sh", "-c", "dumpsys diskstats 2>/dev/null")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            process.waitFor()
+            output
+        }.getOrElse { "" }
+    }
+
     private fun isTelegramPath(path: String): Boolean {
         val lower = path.lowercase(Locale.ROOT)
         return lower.contains("telegram") ||
