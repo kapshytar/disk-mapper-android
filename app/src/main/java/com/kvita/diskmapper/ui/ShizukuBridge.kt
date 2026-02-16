@@ -11,6 +11,7 @@ import com.kvita.diskmapper.shizuku.ShizukuCleanerUserService
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import rikka.shizuku.Shizuku
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -79,8 +80,10 @@ class ShizukuBridge {
 
         return withTimeout(15000L) {
             suspendCancellableCoroutine { continuation ->
+                val consumed = AtomicBoolean(false)
                 val connection = object : ServiceConnection {
                     override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                        if (!consumed.compareAndSet(false, true)) return
                         val service = IShizukuCleanerService.Stub.asInterface(binder)
                         if (service == null) {
                             continuation.resumeWithException(IllegalStateException("Shizuku service bind failed"))
@@ -111,6 +114,7 @@ class ShizukuBridge {
                 runCatching {
                     Shizuku.bindUserService(args, connection)
                 }.onFailure {
+                    consumed.set(true)
                     continuation.resumeWithException(it)
                 }
             }

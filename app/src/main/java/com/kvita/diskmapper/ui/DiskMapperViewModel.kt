@@ -69,12 +69,26 @@ class DiskMapperViewModel : ViewModel() {
     }
 
     fun selectAllFilesRoot(path: String, context: Context) {
+        val warning = if (path == "/storage/emulated/0") {
+            when (shizukuBridge.ensurePermission()) {
+                ShizukuBridge.PermissionState.READY -> null
+                ShizukuBridge.PermissionState.PERMISSION_REQUESTED ->
+                    "Shizuku permission requested. Approve it for full Android/data merge, then run Root scan again."
+                ShizukuBridge.PermissionState.PERMISSION_DENIED ->
+                    "Shizuku permission denied. Root scan may show limited Android/data."
+                ShizukuBridge.PermissionState.SHIZUKU_NOT_RUNNING ->
+                    "Shizuku is not running. Root scan may show limited Android/data."
+            }
+        } else {
+            null
+        }
+
         _uiState.update {
             it.copy(
                 selectedFolderUri = null,
                 selectedRootPath = path,
                 scanSource = ScanSource.ALL_FILES,
-                errorMessage = null
+                errorMessage = warning
             )
         }
         scan(context)
@@ -241,17 +255,20 @@ class DiskMapperViewModel : ViewModel() {
     private fun parseShizukuPayload(payload: String): List<StorageItem> {
         if (payload.isBlank()) return emptyList()
         val separator = '\u001F'
-        return payload
+        val byNormalizedPath = linkedMapOf<String, StorageItem>()
+
+        payload
             .lineSequence()
-            .mapNotNull { line ->
+            .forEach { line ->
                 val parts = line.split(separator)
-                if (parts.size < 5) return@mapNotNull null
-                val path = parts[0]
+                if (parts.size < 5) return@forEach
+                val rawPath = parts[0]
+                val path = normalizeAndroidPath(rawPath)
                 val name = parts[1]
                 val logical = parts[2].toLongOrNull() ?: 0L
                 val onDisk = parts[3].toLongOrNull() ?: logical
                 val isDirectory = parts[4] == "1"
-                StorageItem(
+                val item = StorageItem(
                     uri = Uri.fromFile(File(path)),
                     absolutePath = path,
                     name = name,
@@ -260,8 +277,16 @@ class DiskMapperViewModel : ViewModel() {
                     isDirectory = isDirectory,
                     mimeType = null
                 )
+                byNormalizedPath[path] = item
             }
-            .toList()
+
+        return byNormalizedPath.values.toList()
+    }
+
+    private fun normalizeAndroidPath(path: String): String {
+        return path
+            .replace("/sdcard/", "/storage/emulated/0/")
+            .replace("/storage/self/primary/", "/storage/emulated/0/")
     }
 
     private fun buildShizukuAccessWarning(diagnostics: String, items: List<StorageItem>): String? {

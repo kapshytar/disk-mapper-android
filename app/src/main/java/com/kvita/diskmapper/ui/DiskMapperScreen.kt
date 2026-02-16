@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -207,9 +206,9 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                             item = row.node.item,
                             depth = row.depth,
                             canExpand = row.node.children.isNotEmpty(),
-                            expanded = expandedMap[row.node.path] ?: (row.depth == 0),
+                            expanded = expandedMap[row.node.path] ?: false,
                             onToggleExpand = {
-                                val current = expandedMap[row.node.path] ?: (row.depth == 0)
+                                val current = expandedMap[row.node.path] ?: false
                                 expandedMap[row.node.path] = !current
                             },
                             onDelete = { row.node.item?.let { pendingDelete = it } }
@@ -265,41 +264,36 @@ private fun ItemCard(
     onToggleExpand: () -> Unit,
     onDelete: () -> Unit
 ) {
-    Card(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = canExpand) { onToggleExpand() }
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .weight(1f)
+                .padding(start = (depth * 12).dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = (depth * 10).dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Spacer(modifier = Modifier.width(2.dp))
-                if (canExpand) {
-                    Text(if (expanded) "▾" else "▸")
-                } else {
-                    Text("·")
-                }
-                Text(item?.name ?: "(folder)")
+            Spacer(modifier = Modifier.width(2.dp))
+            if (canExpand) {
+                Text(if (expanded) "▾" else "▸", style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text("•", style = MaterialTheme.typography.bodySmall)
             }
-            Text(
-                text = formatBytes(item?.onDiskSizeBytes ?: 0L),
-                style = MaterialTheme.typography.bodySmall
-            )
-            if (item != null && !item.isDirectory) {
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.Delete, contentDescription = "Delete")
-                }
+            Text(item?.name ?: "(folder)", maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+        }
+        Text(
+            text = "${formatBytes(item?.onDiskSizeBytes ?: 0L)} | ${formatBytes(item?.logicalSizeBytes ?: 0L)}",
+            style = MaterialTheme.typography.bodySmall
+        )
+        if (item != null && !item.isDirectory) {
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete")
             }
         }
     }
@@ -421,7 +415,7 @@ private fun appendNode(
     out: MutableList<TreeRow>
 ) {
     out += TreeRow(node, depth)
-    val isExpanded = expanded[node.path] ?: (depth == 0)
+    val isExpanded = expanded[node.path] ?: false
     if (isExpanded) {
         for (child in node.children.sortedByDescending { it.onDiskSizeBytes }) {
             appendNode(child, depth + 1, expanded, out)
