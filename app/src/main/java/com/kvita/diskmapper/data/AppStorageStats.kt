@@ -174,10 +174,11 @@ object AppStorageStats {
         // Per-app detail items
         for (app in info.apps) {
             val appPath = "/storage-map/per-app/${app.packageName}"
+            val appLabel = "${app.label} (${app.packageName})"
             items += StorageItem(
                 uri = Uri.parse("package://${app.packageName}"),
                 absolutePath = appPath,
-                name = app.label,
+                name = appLabel,
                 logicalSizeBytes = app.totalBytes,
                 onDiskSizeBytes = app.totalBytes,
                 isDirectory = true,
@@ -210,6 +211,44 @@ object AppStorageStats {
                     uri = Uri.parse("package://${app.packageName}/cache"),
                     absolutePath = "$appPath/cache",
                     name = "Cache",
+                    logicalSizeBytes = app.cacheBytes,
+                    onDiskSizeBytes = app.cacheBytes,
+                    isDirectory = false,
+                    mimeType = null
+                )
+            }
+        }
+
+        // Category-focused per-app trees for quick top offenders.
+        for (app in info.apps) {
+            val appLabel = "${app.label} (${app.packageName})"
+            if (app.appBytes > 0) {
+                items += StorageItem(
+                    uri = Uri.parse("apps-apk://${app.packageName}"),
+                    absolutePath = "/storage-map/apps-apk-by-app/${app.packageName}",
+                    name = appLabel,
+                    logicalSizeBytes = app.appBytes,
+                    onDiskSizeBytes = app.appBytes,
+                    isDirectory = false,
+                    mimeType = null
+                )
+            }
+            if (app.dataBytes > 0) {
+                items += StorageItem(
+                    uri = Uri.parse("apps-data://${app.packageName}"),
+                    absolutePath = "/storage-map/apps-data-by-app/${app.packageName}",
+                    name = appLabel,
+                    logicalSizeBytes = app.dataBytes,
+                    onDiskSizeBytes = app.dataBytes,
+                    isDirectory = false,
+                    mimeType = null
+                )
+            }
+            if (app.cacheBytes > 0) {
+                items += StorageItem(
+                    uri = Uri.parse("apps-cache://${app.packageName}"),
+                    absolutePath = "/storage-map/apps-cache-by-app/${app.packageName}",
+                    name = appLabel,
                     logicalSizeBytes = app.cacheBytes,
                     onDiskSizeBytes = app.cacheBytes,
                     isDirectory = false,
