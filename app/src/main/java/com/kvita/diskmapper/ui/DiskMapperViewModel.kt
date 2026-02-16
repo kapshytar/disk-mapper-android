@@ -46,15 +46,18 @@ class DiskMapperViewModel : ViewModel() {
     fun restorePersistedFolder(context: Context) {
         if (_uiState.value.selectedFolderUri != null || _uiState.value.selectedRootPath != null) return
         val persisted = context.contentResolver.persistedUriPermissions.firstOrNull()?.uri ?: return
+        UiTrace.vm("restorePersistedFolder uri=$persisted")
         _uiState.update { it.copy(selectedFolderUri = persisted, scanSource = ScanSource.SAF) }
         scan(context)
     }
 
     fun selectFolder(context: Context, uri: Uri) {
+        UiTrace.vm("selectFolder uri=$uri")
         val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         try {
             context.contentResolver.takePersistableUriPermission(uri, flags)
         } catch (_: Exception) {
+            UiTrace.vm("takePersistableUriPermission failed for uri=$uri")
         }
 
         _uiState.update {
@@ -69,6 +72,7 @@ class DiskMapperViewModel : ViewModel() {
     }
 
     fun selectAllFilesRoot(path: String, context: Context) {
+        UiTrace.vm("selectAllFilesRoot path=$path")
         val warning = if (path == "/storage/emulated/0") {
             when (shizukuBridge.ensurePermission()) {
                 ShizukuBridge.PermissionState.READY -> null
@@ -95,23 +99,28 @@ class DiskMapperViewModel : ViewModel() {
     }
 
     fun scanAndroidPrivateWithShizuku(context: Context, telegramOnly: Boolean) {
+        UiTrace.vm("scanAndroidPrivateWithShizuku telegramOnly=$telegramOnly")
         when (shizukuBridge.ensurePermission()) {
             ShizukuBridge.PermissionState.SHIZUKU_NOT_RUNNING -> {
+                UiTrace.vm("shizuku state=NOT_RUNNING")
                 _uiState.update {
                     it.copy(errorMessage = "Shizuku is not running. Start Shizuku first.")
                 }
             }
             ShizukuBridge.PermissionState.PERMISSION_REQUESTED -> {
+                UiTrace.vm("shizuku state=PERMISSION_REQUESTED")
                 _uiState.update {
                     it.copy(errorMessage = "Shizuku permission requested. Confirm and tap again.")
                 }
             }
             ShizukuBridge.PermissionState.PERMISSION_DENIED -> {
+                UiTrace.vm("shizuku state=PERMISSION_DENIED")
                 _uiState.update {
                     it.copy(errorMessage = "Shizuku permission denied.")
                 }
             }
             ShizukuBridge.PermissionState.READY -> {
+                UiTrace.vm("shizuku state=READY")
                 _uiState.update {
                     it.copy(
                         selectedFolderUri = null,
@@ -129,6 +138,7 @@ class DiskMapperViewModel : ViewModel() {
 
     fun scan(context: Context) {
         val state = _uiState.value
+        UiTrace.vm("scan start source=${state.scanSource} folder=${state.selectedFolderUri} root=${state.selectedRootPath}")
 
         viewModelScope.launch {
             _uiState.update { it.copy(isScanning = true, visitedNodes = 0, errorMessage = null) }
@@ -167,6 +177,9 @@ class DiskMapperViewModel : ViewModel() {
             }
 
             result.onSuccess { scanResult ->
+                UiTrace.vm(
+                    "scan success source=${state.scanSource} items=${scanResult.items.size} visited=${scanResult.visitedNodes} rootOnDisk=${scanResult.rootOnDiskSizeBytes} rootLogical=${scanResult.rootLogicalSizeBytes}"
+                )
                 _uiState.update {
                     it.copy(
                     isScanning = false,
@@ -177,6 +190,7 @@ class DiskMapperViewModel : ViewModel() {
                 )
                 }
             }.onFailure { throwable ->
+                UiTrace.error("scan failed source=${state.scanSource}", throwable)
                 _uiState.update {
                     it.copy(
                     isScanning = false,
@@ -188,6 +202,7 @@ class DiskMapperViewModel : ViewModel() {
     }
 
     private fun scanShizuku(context: Context, telegramOnly: Boolean) {
+        UiTrace.vm("scanShizuku start telegramOnly=$telegramOnly")
         viewModelScope.launch {
             _uiState.update { it.copy(isScanning = true, visitedNodes = 0, errorMessage = null) }
 
@@ -203,6 +218,9 @@ class DiskMapperViewModel : ViewModel() {
                 val logical = items.sumOf { it.logicalSizeBytes }
                 val onDisk = items.sumOf { it.onDiskSizeBytes }
                 val accessWarning = buildShizukuAccessWarning(diagnostics, items)
+                UiTrace.vm(
+                    "scanShizuku success items=${items.size} onDisk=$onDisk logical=$logical diagnostics=$diagnostics warning=${!accessWarning.isNullOrBlank()}"
+                )
                 _uiState.update {
                     it.copy(
                         isScanning = false,
@@ -215,6 +233,7 @@ class DiskMapperViewModel : ViewModel() {
                     )
                 }
             }.onFailure { throwable ->
+                UiTrace.error("scanShizuku failed telegramOnly=$telegramOnly", throwable)
                 _uiState.update {
                     it.copy(
                         isScanning = false,
@@ -226,6 +245,7 @@ class DiskMapperViewModel : ViewModel() {
     }
 
     fun deleteItem(context: Context, item: StorageItem) {
+        UiTrace.vm("deleteItem start path=${item.absolutePath} uri=${item.uri}")
         viewModelScope.launch(Dispatchers.IO) {
             val ok = if (_uiState.value.scanSource == ScanSource.ALL_FILES && item.absolutePath != null) {
                 scanner.deleteFile(item.absolutePath)
@@ -237,12 +257,14 @@ class DiskMapperViewModel : ViewModel() {
                 scanner.delete(context.applicationContext, item.uri)
             }
             if (ok) {
+                UiTrace.vm("deleteItem success path=${item.absolutePath}")
                 if (_uiState.value.scanSource == ScanSource.SHIZUKU_ANDROID) {
                     scanShizuku(context, _uiState.value.shizukuTelegramOnly)
                 } else {
                     scan(context)
                 }
             } else {
+                UiTrace.vm("deleteItem failed path=${item.absolutePath}")
                 _uiState.update { it.copy(errorMessage = "Failed to delete ${item.name}") }
             }
         }

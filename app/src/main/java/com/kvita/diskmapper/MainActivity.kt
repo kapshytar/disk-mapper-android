@@ -1,9 +1,11 @@
 ﻿package com.kvita.diskmapper
 
 import android.os.Bundle
+import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import com.kvita.diskmapper.ui.DiskMapperScreen
+import com.kvita.diskmapper.ui.UiTrace
 import com.kvita.diskmapper.ui.theme.DiskMapperTheme
 
 class MainActivity : ComponentActivity() {
@@ -15,6 +17,13 @@ class MainActivity : ComponentActivity() {
                 DiskMapperScreen()
             }
         }
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            UiTrace.input("touchDown x=${ev.x.toInt()} y=${ev.y.toInt()}")
+        }
+        return super.dispatchTouchEvent(ev)
     }
 }
 

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
@@ -28,7 +29,6 @@ import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -74,10 +74,16 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     val expandedMap = remember { mutableStateMapOf<String, Boolean>() }
 
     val folderPicker = rememberLauncherForActivityResult(OpenDocumentTree()) { uri: Uri? ->
-        uri?.let { vm.selectFolder(context, it) }
+        if (uri == null) {
+            UiTrace.ui("folderPicker canceled")
+        } else {
+            UiTrace.ui("folderPicker selected uri=$uri")
+            vm.selectFolder(context, uri)
+        }
     }
 
     LaunchedEffect(Unit) {
+        UiTrace.ui("screen opened")
         vm.restorePersistedFolder(context)
     }
 
@@ -123,6 +129,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 actions = {
                     IconButton(
                         onClick = {
+                            UiTrace.ui("rescan click source=${state.scanSource}")
                             if (state.scanSource == ScanSource.SHIZUKU_ANDROID) {
                                 vm.scanAndroidPrivateWithShizuku(context, state.shizukuTelegramOnly)
                             } else {
@@ -148,65 +155,94 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { folderPicker.launch(null) }, enabled = !state.isScanning) {
-                    Text(if (state.selectedFolderUri == null) "Select folder" else "Change folder")
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    ActionChip(
+                        title = if (state.selectedFolderUri == null) "Select folder" else "Change folder",
+                        enabled = !state.isScanning
+                    ) {
+                        UiTrace.ui("action select-folder")
+                        folderPicker.launch(null)
+                    }
                 }
-                Button(
-                    onClick = {
+                item {
+                    ActionChip(
+                        title = "Root scan",
+                        enabled = !state.isScanning
+                    ) {
+                        UiTrace.ui("action root-scan click")
                         if (hasAllFilesAccess()) {
                             vm.selectAllFilesRoot("/storage/emulated/0", context)
                         } else {
+                            UiTrace.ui("request MANAGE_EXTERNAL_STORAGE")
                             requestAllFilesAccess(context)
                         }
-                    },
-                    enabled = !state.isScanning
-                ) {
-                    Text("Root scan")
-                }
-                Button(
-                    onClick = {
-                        val telegramOnly = filter == FileFilter.TELEGRAM
-                        vm.scanAndroidPrivateWithShizuku(context, telegramOnly)
-                    },
-                    enabled = !state.isScanning
-                ) {
-                    Text("Shizuku Android/")
-                }
-                if (state.selectedFolderUri != null) {
-                    Column(modifier = Modifier.align(Alignment.CenterVertically)) {
-                        Text(
-                            text = "Logical: ${formatBytes(state.rootLogicalSizeBytes)}",
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                        Text(
-                            text = "On-disk est: ${formatBytes(state.rootOnDiskSizeBytes)}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
                     }
                 }
-                if (state.selectedRootPath != null) {
-                    Column(modifier = Modifier.align(Alignment.CenterVertically)) {
-                        Text(
-                            text = "Root: ${state.selectedRootPath}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        if (!state.shizukuDiagnostics.isNullOrBlank()) {
-                            Text(
-                                text = "Shizuku: ${state.shizukuDiagnostics}",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
+                item {
+                    ActionChip(
+                        title = "Shizuku Android/",
+                        enabled = !state.isScanning
+                    ) {
+                        val telegramOnly = filter == FileFilter.TELEGRAM
+                        UiTrace.ui("action shizuku-scan telegramOnly=$telegramOnly")
+                        vm.scanAndroidPrivateWithShizuku(context, telegramOnly)
                     }
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip("All", filter == FileFilter.ALL) { filter = FileFilter.ALL }
-                FilterChip("Telegram", filter == FileFilter.TELEGRAM) { filter = FileFilter.TELEGRAM }
-                FilterChip("Videos", filter == FileFilter.VIDEOS) { filter = FileFilter.VIDEOS }
-                FilterChip("Archives", filter == FileFilter.ARCHIVES) { filter = FileFilter.ARCHIVES }
-                FilterChip("Installers", filter == FileFilter.INSTALLERS) { filter = FileFilter.INSTALLERS }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "D: ${formatBytes(state.rootOnDiskSizeBytes)}  L: ${formatBytes(state.rootLogicalSizeBytes)}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (!state.shizukuDiagnostics.isNullOrBlank()) {
+                    Text(
+                        text = "Shizuku: ${state.shizukuDiagnostics}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            if (state.selectedRootPath != null) {
+                Text(text = "Root: ${state.selectedRootPath}", style = MaterialTheme.typography.bodySmall)
+            }
+
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    FilterChip("All", filter == FileFilter.ALL) {
+                        UiTrace.ui("filter ALL")
+                        filter = FileFilter.ALL
+                    }
+                }
+                item {
+                    FilterChip("Telegram", filter == FileFilter.TELEGRAM) {
+                        UiTrace.ui("filter TELEGRAM")
+                        filter = FileFilter.TELEGRAM
+                    }
+                }
+                item {
+                    FilterChip("Videos", filter == FileFilter.VIDEOS) {
+                        UiTrace.ui("filter VIDEOS")
+                        filter = FileFilter.VIDEOS
+                    }
+                }
+                item {
+                    FilterChip("Archives", filter == FileFilter.ARCHIVES) {
+                        UiTrace.ui("filter ARCHIVES")
+                        filter = FileFilter.ARCHIVES
+                    }
+                }
+                item {
+                    FilterChip("Installers", filter == FileFilter.INSTALLERS) {
+                        UiTrace.ui("filter INSTALLERS")
+                        filter = FileFilter.INSTALLERS
+                    }
+                }
             }
 
             if (state.isScanning) {
@@ -232,6 +268,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                             onToggleExpand = {
                                 val current = expandedMap[row.node.path] ?: false
                                 expandedMap[row.node.path] = !current
+                                UiTrace.ui("toggle path=${row.node.path} expanded=${!current}")
                             },
                             onDelete = { row.node.item?.let { pendingDelete = it } }
                         )
@@ -266,12 +303,16 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
             text = { Text("Delete ${pendingDelete?.name}?") },
             confirmButton = {
                 TextButton(onClick = {
+                    UiTrace.ui("delete confirm item=${pendingDelete?.absolutePath ?: pendingDelete?.name}")
                     pendingDelete?.let { vm.deleteItem(context, it) }
                     pendingDelete = null
                 }) { Text("Delete") }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+                TextButton(onClick = {
+                    UiTrace.ui("delete canceled")
+                    pendingDelete = null
+                }) { Text("Cancel") }
             }
         )
     }
@@ -280,6 +321,15 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
 @Composable
 private fun FilterChip(title: String, selected: Boolean, onClick: () -> Unit) {
     AssistChip(onClick = onClick, label = { Text(title) }, leadingIcon = if (selected) ({ Text("*") }) else null)
+}
+
+@Composable
+private fun ActionChip(title: String, enabled: Boolean, onClick: () -> Unit) {
+    AssistChip(
+        onClick = onClick,
+        enabled = enabled,
+        label = { Text(title) }
+    )
 }
 
 @Composable
@@ -300,8 +350,8 @@ private fun ItemCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = canExpand) { onToggleExpand() }
-            .height(26.dp)
-            .padding(horizontal = 4.dp),
+            .height(24.dp)
+            .padding(horizontal = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -326,7 +376,7 @@ private fun ItemCard(
             Icon(
                 imageVector = if (isDir) Icons.Default.Folder else Icons.Default.InsertDriveFile,
                 contentDescription = null,
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(12.dp),
                 tint = if (isDir) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
@@ -343,25 +393,20 @@ private fun ItemCard(
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text(
-                text = formatBytes(displayOnDiskBytes),
+                text = "D:${formatBytes(displayOnDiskBytes)}",
                 style = MaterialTheme.typography.bodySmall
             )
             Text(
-                text = "|",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = formatBytes(displayLogicalBytes),
+                text = "L:${formatBytes(displayLogicalBytes)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             if (item != null && !item.isDirectory) {
-                IconButton(onClick = onDelete, modifier = Modifier.size(24.dp)) {
+                IconButton(onClick = onDelete, modifier = Modifier.size(20.dp)) {
                     Icon(
                         Icons.Default.Delete,
                         contentDescription = "Delete",
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(12.dp)
                     )
                 }
             }
