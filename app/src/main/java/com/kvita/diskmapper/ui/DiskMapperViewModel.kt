@@ -14,9 +14,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+
+enum class ScanSource {
+    SAF,
+    ALL_FILES
+}
 
 data class DiskMapperUiState(
     val selectedFolderUri: Uri? = null,
+    val selectedRootPath: String? = null,
+    val scanSource: ScanSource = ScanSource.SAF,
     val isScanning: Boolean = false,
     val visitedNodes: Long = 0,
     val rootLogicalSizeBytes: Long = 0,
@@ -32,9 +40,9 @@ class DiskMapperViewModel : ViewModel() {
     val uiState: StateFlow<DiskMapperUiState> = _uiState.asStateFlow()
 
     fun restorePersistedFolder(context: Context) {
-        if (_uiState.value.selectedFolderUri != null) return
+        if (_uiState.value.selectedFolderUri != null || _uiState.value.selectedRootPath != null) return
         val persisted = context.contentResolver.persistedUriPermissions.firstOrNull()?.uri ?: return
-        _uiState.update { it.copy(selectedFolderUri = persisted) }
+        _uiState.update { it.copy(selectedFolderUri = persisted, scanSource = ScanSource.SAF) }
         scan(context)
     }
 
@@ -45,20 +53,52 @@ class DiskMapperViewModel : ViewModel() {
         } catch (_: Exception) {
         }
 
-        _uiState.update { it.copy(selectedFolderUri = uri, errorMessage = null) }
+        _uiState.update {
+            it.copy(
+                selectedFolderUri = uri,
+                selectedRootPath = null,
+                scanSource = ScanSource.SAF,
+                errorMessage = null
+            )
+        }
+        scan(context)
+    }
+
+    fun selectAllFilesRoot(path: String, context: Context) {
+        _uiState.update {
+            it.copy(
+                selectedFolderUri = null,
+                selectedRootPath = path,
+                scanSource = ScanSource.ALL_FILES,
+                errorMessage = null
+            )
+        }
         scan(context)
     }
 
     fun scan(context: Context) {
-        val rootUri = _uiState.value.selectedFolderUri ?: return
+        val state = _uiState.value
 
         viewModelScope.launch {
             _uiState.update { it.copy(isScanning = true, visitedNodes = 0, errorMessage = null) }
 
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    scanner.scan(context.applicationContext, rootUri) { visited ->
-                        _uiState.update { it.copy(visitedNodes = visited) }
+                    when (state.scanSource) {
+                        ScanSource.SAF -> {
+                            val rootUri = state.selectedFolderUri
+                                ?: return@runCatching throw IllegalStateException("Folder is not selected")
+                            scanner.scan(context.applicationContext, rootUri) { visited ->
+                                _uiState.update { it.copy(visitedNodes = visited) }
+                            }
+                        }
+                        ScanSource.ALL_FILES -> {
+                            val rootPath = state.selectedRootPath
+                                ?: return@runCatching throw IllegalStateException("Root path is not selected")
+                            scanner.scanFileTree(File(rootPath)) { visited ->
+                                _uiState.update { it.copy(visitedNodes = visited) }
+                            }
+                        }
                     }
                 }
             }
@@ -86,7 +126,11 @@ class DiskMapperViewModel : ViewModel() {
 
     fun deleteItem(context: Context, item: StorageItem) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ok = scanner.delete(context.applicationContext, item.uri)
+            val ok = if (_uiState.value.scanSource == ScanSource.ALL_FILES && item.absolutePath != null) {
+                scanner.deleteFile(item.absolutePath)
+            } else {
+                scanner.delete(context.applicationContext, item.uri)
+            }
             if (ok) {
                 scan(context)
             } else {

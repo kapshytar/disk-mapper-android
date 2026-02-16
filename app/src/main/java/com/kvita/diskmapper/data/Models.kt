@@ -4,6 +4,7 @@ import android.net.Uri
 
 data class StorageItem(
     val uri: Uri,
+    val absolutePath: String? = null,
     val name: String,
     val logicalSizeBytes: Long,
     val onDiskSizeBytes: Long,

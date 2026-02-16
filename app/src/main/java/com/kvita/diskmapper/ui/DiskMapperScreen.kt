@@ -1,6 +1,10 @@
 ﻿package com.kvita.diskmapper.ui
 
+import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
 import androidx.compose.foundation.layout.Arrangement
@@ -110,6 +114,18 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 Button(onClick = { folderPicker.launch(null) }, enabled = !state.isScanning) {
                     Text(if (state.selectedFolderUri == null) "Select folder" else "Change folder")
                 }
+                Button(
+                    onClick = {
+                        if (hasAllFilesAccess()) {
+                            vm.selectAllFilesRoot("/storage/emulated/0", context)
+                        } else {
+                            requestAllFilesAccess(context)
+                        }
+                    },
+                    enabled = !state.isScanning
+                ) {
+                    Text("Root scan")
+                }
                 if (state.selectedFolderUri != null) {
                     Column(modifier = Modifier.align(Alignment.CenterVertically)) {
                         Text(
@@ -118,6 +134,14 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                         )
                         Text(
                             text = "On-disk est: ${formatBytes(state.rootOnDiskSizeBytes)}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                if (state.selectedRootPath != null) {
+                    Column(modifier = Modifier.align(Alignment.CenterVertically)) {
+                        Text(
+                            text = "Root: ${state.selectedRootPath}",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -228,10 +252,14 @@ private fun formatBytes(bytes: Long): String {
 private fun StorageItem.isTelegramRelated(): Boolean {
     val lowerName = name.lowercase(Locale.ROOT)
     val lowerUri = uri.toString().lowercase(Locale.ROOT)
+    val lowerPath = (absolutePath ?: "").lowercase(Locale.ROOT)
 
     val pathMatch = lowerUri.contains("telegram") ||
+        lowerPath.contains("telegram") ||
         lowerUri.contains("org.telegram.messenger") ||
-        lowerUri.contains("org.telegram.plus")
+        lowerUri.contains("org.telegram.plus") ||
+        lowerPath.contains("/android/data/org.telegram.messenger") ||
+        lowerPath.contains("/android/media/org.telegram.messenger")
 
     val tgFileTypeMatch = lowerName.endsWith(".tgs") ||
         lowerName.endsWith(".webm") ||
@@ -239,5 +267,25 @@ private fun StorageItem.isTelegramRelated(): Boolean {
         lowerName.endsWith(".opus")
 
     return pathMatch || tgFileTypeMatch
+}
+
+private fun hasAllFilesAccess(): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Environment.isExternalStorageManager()
+    } else {
+        true
+    }
+}
+
+private fun requestAllFilesAccess(context: android.content.Context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+    val intent = Intent(
+        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+        Uri.parse("package:${context.packageName}")
+    )
+    val fallback = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+    runCatching { context.startActivity(intent) }.onFailure {
+        runCatching { context.startActivity(fallback) }
+    }
 }
 
