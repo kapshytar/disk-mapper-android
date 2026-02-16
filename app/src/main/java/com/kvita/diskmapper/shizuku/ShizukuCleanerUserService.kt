@@ -1,5 +1,6 @@
 package com.kvita.diskmapper.shizuku
 
+import android.os.Process
 import java.io.File
 import java.util.Locale
 
@@ -8,13 +9,8 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
     private val fieldSeparator = '\u001F'
 
     override fun scanPaths(basePath: String, telegramOnly: Boolean, maxItems: Int): String {
-        val root = File(basePath)
-        if (!root.exists()) return ""
-
-        val targets = listOf(
-            File(root, "Android/data"),
-            File(root, "Android/obb")
-        ).filter { it.exists() }
+        val targets = resolveAndroidTargets(basePath)
+        if (targets.isEmpty()) return ""
 
         val items = ArrayList<Record>()
         for (target in targets) {
@@ -41,6 +37,16 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
             if (file.isDirectory) return@runCatching false
             file.delete()
         }.getOrDefault(false)
+    }
+
+    override fun diagnostics(): String {
+        val targets = resolveAndroidTargets("/storage/emulated/0")
+        val uid = Process.myUid()
+        val data = targets.find { it.absolutePath.endsWith("/Android/data") }
+        val obb = targets.find { it.absolutePath.endsWith("/Android/obb") }
+        val dataEntries = data?.listFiles()?.size ?: -1
+        val obbEntries = obb?.listFiles()?.size ?: -1
+        return "uid=$uid;dataEntries=$dataEntries;obbEntries=$obbEntries"
     }
 
     private fun walk(root: File, current: File, telegramOnly: Boolean, out: MutableList<Record>): SizePair {
@@ -87,6 +93,28 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
         return lower.contains("telegram") ||
             lower.contains("org.telegram.messenger") ||
             lower.contains("org.telegram.plus")
+    }
+
+    private fun resolveAndroidTargets(basePath: String): List<File> {
+        val candidates = linkedSetOf(
+            "$basePath/Android/data",
+            "$basePath/Android/obb",
+            "/storage/emulated/0/Android/data",
+            "/storage/emulated/0/Android/obb",
+            "/storage/self/primary/Android/data",
+            "/storage/self/primary/Android/obb",
+            "/sdcard/Android/data",
+            "/sdcard/Android/obb"
+        )
+
+        val valid = ArrayList<File>()
+        for (path in candidates) {
+            val file = File(path)
+            if (!file.exists() || !file.isDirectory) continue
+            val canRead = runCatching { file.listFiles() != null }.getOrDefault(false)
+            if (canRead) valid += file
+        }
+        return valid.distinctBy { it.absolutePath }
     }
 
     private fun estimateOnDisk(logicalBytes: Long): Long {

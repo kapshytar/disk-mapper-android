@@ -42,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -54,6 +55,10 @@ enum class FileFilter {
     ALL, TELEGRAM, VIDEOS, ARCHIVES, INSTALLERS
 }
 
+enum class ViewMode {
+    TREE, LIST
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
@@ -61,7 +66,9 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     var filter by remember { mutableStateOf(FileFilter.ALL) }
+    var viewMode by remember { mutableStateOf(ViewMode.TREE) }
     var pendingDelete by remember { mutableStateOf<StorageItem?>(null) }
+    val expandedMap = remember { mutableStateMapOf<String, Boolean>() }
 
     val folderPicker = rememberLauncherForActivityResult(OpenDocumentTree()) { uri: Uri? ->
         uri?.let { vm.selectFolder(context, it) }
@@ -81,6 +88,13 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 FileFilter.INSTALLERS -> item.name.endsWith(".apk", true) || item.name.endsWith(".xapk", true)
             }
         }
+    }
+
+    val treeRoots = remember(filteredItems) {
+        buildTree(filteredItems)
+    }
+    val treeRows = remember(treeRoots, expandedMap) {
+        flattenTree(treeRoots, expandedMap)
     }
 
     LaunchedEffect(state.errorMessage) {
@@ -165,8 +179,19 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                             text = "Root: ${state.selectedRootPath}",
                             style = MaterialTheme.typography.bodySmall
                         )
+                        if (!state.shizukuDiagnostics.isNullOrBlank()) {
+                            Text(
+                                text = "Shizuku: ${state.shizukuDiagnostics}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                     }
                 }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip("Tree", viewMode == ViewMode.TREE) { viewMode = ViewMode.TREE }
+                FilterChip("List", viewMode == ViewMode.LIST) { viewMode = ViewMode.LIST }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -184,12 +209,34 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 }
             }
 
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(filteredItems.take(300), key = { it.uri.toString() }) { item ->
-                    ItemCard(
-                        item = item,
-                        onDelete = { pendingDelete = item }
-                    )
+            if (viewMode == ViewMode.TREE && treeRows.isNotEmpty()) {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(treeRows.take(500), key = { it.node.path }) { row ->
+                        ItemCard(
+                            item = row.node.item,
+                            depth = row.depth,
+                            canExpand = row.node.children.isNotEmpty(),
+                            expanded = expandedMap[row.node.path] ?: false,
+                            onToggleExpand = {
+                                val current = expandedMap[row.node.path] ?: false
+                                expandedMap[row.node.path] = !current
+                            },
+                            onDelete = { pendingDelete = row.node.item }
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(filteredItems.take(300), key = { it.uri.toString() }) { item ->
+                        ItemCard(
+                            item = item,
+                            depth = 0,
+                            canExpand = false,
+                            expanded = false,
+                            onToggleExpand = {},
+                            onDelete = { pendingDelete = item }
+                        )
+                    }
                 }
             }
         }
@@ -219,7 +266,14 @@ private fun FilterChip(title: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ItemCard(item: StorageItem, onDelete: () -> Unit) {
+private fun ItemCard(
+    item: StorageItem,
+    depth: Int,
+    canExpand: Boolean,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onDelete: () -> Unit
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -229,10 +283,17 @@ private fun ItemCard(item: StorageItem, onDelete: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = (depth * 12).dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (canExpand) {
+                    TextButton(onClick = onToggleExpand) {
+                        Text(if (expanded) "-" else "+")
+                    }
+                }
                 Icon(
                     if (item.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile,
                     contentDescription = null
@@ -308,5 +369,72 @@ private fun requestAllFilesAccess(context: android.content.Context) {
     runCatching { context.startActivity(intent) }.onFailure {
         runCatching { context.startActivity(fallback) }
     }
+}
+
+private data class TreeNode(
+    val path: String,
+    val item: StorageItem,
+    val children: MutableList<TreeNode> = mutableListOf()
+)
+
+private data class TreeRow(
+    val node: TreeNode,
+    val depth: Int
+)
+
+private fun buildTree(items: List<StorageItem>): List<TreeNode> {
+    val pathItems = items.filter { !it.absolutePath.isNullOrBlank() }
+    if (pathItems.isEmpty()) return emptyList()
+
+    val byPath = pathItems.associateBy { it.absolutePath!! }.toMutableMap()
+    val nodes = byPath.mapValues { (path, item) -> TreeNode(path = path, item = item) }.toMutableMap()
+    val roots = mutableListOf<TreeNode>()
+
+    for ((path, node) in nodes) {
+        val parentPath = parentPath(path)
+        val parent = if (parentPath == null) null else nodes[parentPath]
+        if (parent != null) {
+            parent.children += node
+        } else {
+            roots += node
+        }
+    }
+
+    roots.forEach { sortNode(it) }
+    return roots.sortedByDescending { it.item.onDiskSizeBytes }
+}
+
+private fun flattenTree(roots: List<TreeNode>, expanded: Map<String, Boolean>): List<TreeRow> {
+    val out = mutableListOf<TreeRow>()
+    for (root in roots.sortedByDescending { it.item.onDiskSizeBytes }) {
+        appendNode(root, 0, expanded, out)
+    }
+    return out
+}
+
+private fun appendNode(
+    node: TreeNode,
+    depth: Int,
+    expanded: Map<String, Boolean>,
+    out: MutableList<TreeRow>
+) {
+    out += TreeRow(node, depth)
+    if (expanded[node.path] == true) {
+        for (child in node.children.sortedByDescending { it.item.onDiskSizeBytes }) {
+            appendNode(child, depth + 1, expanded, out)
+        }
+    }
+}
+
+private fun sortNode(node: TreeNode) {
+    node.children.sortByDescending { it.item.onDiskSizeBytes }
+    node.children.forEach { sortNode(it) }
+}
+
+private fun parentPath(path: String): String? {
+    val normalized = path.trimEnd('/', '\\')
+    val idx = normalized.lastIndexOfAny(charArrayOf('/', '\\'))
+    if (idx <= 0) return null
+    return normalized.substring(0, idx)
 }
 

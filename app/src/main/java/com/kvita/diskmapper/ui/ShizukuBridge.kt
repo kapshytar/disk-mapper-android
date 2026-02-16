@@ -52,6 +52,12 @@ class ShizukuBridge {
         }
     }
 
+    suspend fun diagnostics(context: Context): String {
+        return withService(context) { service ->
+            service.diagnostics()
+        }
+    }
+
     private suspend fun <T> withService(
         context: Context,
         block: (IShizukuCleanerService) -> T

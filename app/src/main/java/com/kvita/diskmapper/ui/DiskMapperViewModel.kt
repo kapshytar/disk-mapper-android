@@ -31,6 +31,7 @@ data class DiskMapperUiState(
     val rootLogicalSizeBytes: Long = 0,
     val rootOnDiskSizeBytes: Long = 0,
     val shizukuTelegramOnly: Boolean = false,
+    val shizukuDiagnostics: String? = null,
     val items: List<StorageItem> = emptyList(),
     val errorMessage: String? = null
 )
@@ -103,6 +104,7 @@ class DiskMapperViewModel : ViewModel() {
                         selectedRootPath = "/storage/emulated/0/Android",
                         scanSource = ScanSource.SHIZUKU_ANDROID,
                         shizukuTelegramOnly = telegramOnly,
+                        shizukuDiagnostics = null,
                         errorMessage = null
                     )
                 }
@@ -170,21 +172,25 @@ class DiskMapperViewModel : ViewModel() {
 
             val result = withContext(Dispatchers.IO) {
                 runCatching {
+                    val diagnostics = shizukuBridge.diagnostics(context.applicationContext)
                     val payload = shizukuBridge.scanAndroidPrivate(context.applicationContext, telegramOnly)
-                    parseShizukuPayload(payload)
+                    Pair(diagnostics, parseShizukuPayload(payload))
                 }
             }
 
-            result.onSuccess { items ->
+            result.onSuccess { (diagnostics, items) ->
                 val logical = items.sumOf { it.logicalSizeBytes }
                 val onDisk = items.sumOf { it.onDiskSizeBytes }
+                val accessWarning = buildShizukuAccessWarning(diagnostics, items)
                 _uiState.update {
                     it.copy(
                         isScanning = false,
                         visitedNodes = items.size.toLong(),
                         rootLogicalSizeBytes = logical,
                         rootOnDiskSizeBytes = onDisk,
-                        items = items.sortedByDescending { item -> item.onDiskSizeBytes }
+                        shizukuDiagnostics = diagnostics,
+                        items = items.sortedByDescending { item -> item.onDiskSizeBytes },
+                        errorMessage = accessWarning
                     )
                 }
             }.onFailure { throwable ->
@@ -249,6 +255,28 @@ class DiskMapperViewModel : ViewModel() {
                 )
             }
             .toList()
+    }
+
+    private fun buildShizukuAccessWarning(diagnostics: String, items: List<StorageItem>): String? {
+        val map = diagnostics
+            .split(";")
+            .mapNotNull {
+                val idx = it.indexOf("=")
+                if (idx <= 0) null else it.substring(0, idx) to it.substring(idx + 1)
+            }
+            .toMap()
+
+        val uid = map["uid"]?.toIntOrNull()
+        val dataEntries = map["dataEntries"]?.toIntOrNull() ?: -1
+        val obbEntries = map["obbEntries"]?.toIntOrNull() ?: -1
+
+        if (uid == 2000 && dataEntries <= 0 && obbEntries <= 0 && items.isNotEmpty()) {
+            return "Shizuku runs as shell (uid 2000). Android/data access may be limited on this ROM; use root/Sui for full access."
+        }
+        if (uid == 2000 && items.isEmpty()) {
+            return "No readable files in Android/data or Android/obb via shell Shizuku. Root/Sui backend is recommended."
+        }
+        return null
     }
 }
 
