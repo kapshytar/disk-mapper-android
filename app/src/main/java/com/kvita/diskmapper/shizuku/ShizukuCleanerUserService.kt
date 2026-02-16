@@ -8,18 +8,28 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
     private val clusterSizeBytes = 4096L
     private val fieldSeparator = '\u001F'
 
+    /**
+     * Scans Android/data and Android/obb.
+     *
+     * Strategy: lightweight recursive size aggregation without storing every
+     * file as a Record. Only directories (up to [MAX_DEPTH] levels inside each
+     * target) are emitted. This keeps memory usage low so lmkd does not kill
+     * the Shizuku user-service process, and the Binder payload stays well
+     * under the ~1 MB transaction limit.
+     */
     override fun scanPaths(basePath: String, telegramOnly: Boolean, maxItems: Int): String {
         val targets = resolveAndroidTargets(basePath)
         if (targets.isEmpty()) return ""
 
-        val items = ArrayList<Record>()
+        val records = ArrayList<Record>(2048)
         for (target in targets) {
-            val listed = runCatching { target.listFiles() }.getOrNull()
-            if (listed != null) {
-                walk(target, target, telegramOnly, items)
+            val canList = runCatching { target.listFiles() }.getOrNull()
+            if (canList != null) {
+                walkLight(target, target, telegramOnly, 0, records)
             } else {
+                // Cannot list — fall back to `du`
                 val duBytes = readDuBytes(target.absolutePath) ?: 0L
-                items += Record(
+                records += Record(
                     path = target.absolutePath,
                     name = target.name.ifEmpty { "(folder)" },
                     logicalBytes = duBytes,
@@ -29,21 +39,51 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
             }
         }
 
-        val sorted = items.sortedByDescending { it.onDiskBytes }
+        val sorted = records.sortedByDescending { it.onDiskBytes }
         val capped = if (maxItems > 0) sorted.take(maxItems) else sorted
+        return buildPayload(capped)
+    }
 
-        // Build result string carefully — Binder has ~1MB transaction limit.
-        // If the full payload is too large, drop leaf files and keep directories only.
-        val full = buildPayload(capped)
-        if (full.length < 800_000) return full
+    /**
+     * Recursively compute sizes but only emit directory Records up to
+     * [MAX_DEPTH] levels deep. Files are never stored — only their sizes
+     * are accumulated into parent directory totals.
+     */
+    private fun walkLight(
+        root: File,
+        current: File,
+        telegramOnly: Boolean,
+        depth: Int,
+        out: MutableList<Record>
+    ): SizePair {
+        if (current.isFile) {
+            val logical = current.length().coerceAtLeast(0L)
+            return SizePair(logical, estimateOnDisk(logical))
+        }
 
-        // Fallback: directories only (much smaller payload)
-        val dirsOnly = capped.filter { it.isDirectory }
-        val dirPayload = buildPayload(dirsOnly)
-        if (dirPayload.length < 800_000) return dirPayload
+        val children = runCatching { current.listFiles() }.getOrNull() ?: emptyArray()
+        var logicalTotal = 0L
+        var onDiskTotal = 0L
+        for (child in children) {
+            val s = walkLight(root, child, telegramOnly, depth + 1, out)
+            logicalTotal += s.logicalBytes
+            onDiskTotal += s.onDiskBytes
+        }
 
-        // Ultra fallback: top N dirs by size
-        return buildPayload(dirsOnly.take(500))
+        // Emit this directory if it's not the target root itself
+        if (current.absolutePath != root.absolutePath && depth <= MAX_DEPTH) {
+            if (!telegramOnly || isTelegramPath(current.absolutePath)) {
+                out += Record(
+                    path = current.absolutePath,
+                    name = current.name.ifEmpty { "(folder)" },
+                    logicalBytes = logicalTotal,
+                    onDiskBytes = onDiskTotal,
+                    isDirectory = true
+                )
+            }
+        }
+
+        return SizePair(logicalTotal, onDiskTotal)
     }
 
     private fun buildPayload(records: List<Record>): String {
@@ -77,45 +117,6 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
         val dataDuMb = (readDuBytes("/storage/emulated/0/Android/data") ?: -1L) / (1024L * 1024L)
         val obbDuMb = (readDuBytes("/storage/emulated/0/Android/obb") ?: -1L) / (1024L * 1024L)
         return "uid=$uid;dataEntries=$dataEntries;obbEntries=$obbEntries;duDataMb=$dataDuMb;duObbMb=$obbDuMb"
-    }
-
-    private fun walk(root: File, current: File, telegramOnly: Boolean, out: MutableList<Record>): SizePair {
-        if (current.isFile) {
-            val logical = current.length().coerceAtLeast(0L)
-            val onDisk = estimateOnDisk(logical)
-            if (!telegramOnly || isTelegramPath(current.absolutePath)) {
-                out += Record(
-                    path = current.absolutePath,
-                    name = current.name,
-                    logicalBytes = logical,
-                    onDiskBytes = onDisk,
-                    isDirectory = false
-                )
-            }
-            return SizePair(logical, onDisk)
-        }
-
-        val children = runCatching { current.listFiles() }.getOrNull() ?: emptyArray()
-        var logicalTotal = 0L
-        var onDiskTotal = 0L
-        for (child in children) {
-            val childSize = walk(root, child, telegramOnly, out)
-            logicalTotal += childSize.logicalBytes
-            onDiskTotal += childSize.onDiskBytes
-        }
-
-        if (current.absolutePath != root.absolutePath) {
-            if (!telegramOnly || isTelegramPath(current.absolutePath)) {
-                out += Record(
-                    path = current.absolutePath,
-                    name = current.name.ifEmpty { "(folder)" },
-                    logicalBytes = logicalTotal,
-                    onDiskBytes = onDiskTotal,
-                    isDirectory = true
-                )
-            }
-        }
-        return SizePair(logicalTotal, onDiskTotal)
     }
 
     private fun isTelegramPath(path: String): Boolean {
@@ -155,7 +156,8 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
                 .start()
             val line = process.inputStream.bufferedReader().use { it.readLine().orEmpty() }
             process.waitFor()
-            val kb = line.trim().split(Regex("\\s+")).firstOrNull()?.toLongOrNull() ?: return@runCatching null
+            val kb = line.trim().split(Regex("\\s+")).firstOrNull()?.toLongOrNull()
+                ?: return@runCatching null
             kb * 1024L
         }.getOrNull()
     }
@@ -178,4 +180,12 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
         val logicalBytes: Long,
         val onDiskBytes: Long
     )
+
+    companion object {
+        /** Max depth of subdirectories to emit (relative to each target root).
+         *  depth 0 = Android/data/com.app
+         *  depth 1 = Android/data/com.app/files
+         *  depth 2 = Android/data/com.app/files/documents  */
+        private const val MAX_DEPTH = 4
+    }
 }
