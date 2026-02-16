@@ -8,12 +8,15 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,6 +24,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -46,8 +51,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kvita.diskmapper.data.StorageItem
@@ -215,7 +222,9 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                     items(treeRows.take(500), key = { it.node.path }) { row ->
                         ItemCard(
                             label = row.node.name.ifBlank { row.node.item?.name ?: "(folder)" },
-                            guide = row.guide,
+                            depth = row.depth,
+                            ancestorHasNext = row.ancestorHasNext,
+                            isLast = row.isLast,
                             item = row.node.item,
                             canExpand = row.node.children.isNotEmpty(),
                             expanded = expandedMap[row.node.path] ?: false,
@@ -234,7 +243,9 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                     items(filteredItems.take(300), key = { it.uri.toString() }) { item ->
                         ItemCard(
                             label = item.name,
-                            guide = "",
+                            depth = 0,
+                            ancestorHasNext = emptyList(),
+                            isLast = true,
                             item = item,
                             canExpand = false,
                             expanded = false,
@@ -275,7 +286,9 @@ private fun FilterChip(title: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 private fun ItemCard(
     label: String,
-    guide: String,
+    depth: Int,
+    ancestorHasNext: List<Boolean>,
+    isLast: Boolean,
     item: StorageItem?,
     canExpand: Boolean,
     expanded: Boolean,
@@ -288,7 +301,8 @@ private fun ItemCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = canExpand) { onToggleExpand() }
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+            .height(26.dp)
+            .padding(horizontal = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -296,49 +310,99 @@ private fun ItemCard(
             modifier = Modifier
                 .weight(1f),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            if (guide.isNotEmpty()) {
-                Text(
-                    text = guide,
-                    maxLines = 1,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace
-                )
+            if (depth > 0) {
+                TreeIndent(ancestorHasNext = ancestorHasNext, isLast = isLast)
             }
             if (canExpand) {
                 Text(
-                    if (expanded) "[-]" else "[+]",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace
+                    if (expanded) "▾" else "▸",
+                    style = MaterialTheme.typography.bodySmall
                 )
             } else {
-                Text(
-                    "   ",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace
-                )
+                Spacer(modifier = Modifier.width(8.dp))
             }
+            val isDir = item?.isDirectory == true || canExpand
+            Icon(
+                imageVector = if (isDir) Icons.Default.Folder else Icons.Default.InsertDriveFile,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = if (isDir) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Text(
                 label,
                 maxLines = 1,
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodySmall
             )
-            if (item?.isDirectory == true || canExpand) {
+            if (isDir) {
                 Spacer(modifier = Modifier.width(2.dp))
             }
         }
-        Text(
-            text = "${formatBytes(displayOnDiskBytes)} | ${formatBytes(displayLogicalBytes)}",
-            style = MaterialTheme.typography.bodySmall
-        )
-        if (item != null && !item.isDirectory) {
-            IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
-                Icon(
-                    Icons.Default.Delete,
-                    contentDescription = "Delete",
-                    modifier = Modifier.size(16.dp)
-                )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = formatBytes(displayOnDiskBytes),
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "|",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = formatBytes(displayLogicalBytes),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (item != null && !item.isDirectory) {
+                IconButton(onClick = onDelete, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Delete",
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TreeIndent(
+    ancestorHasNext: List<Boolean>,
+    isLast: Boolean,
+    step: Dp = 10.dp
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        for (hasNext in ancestorHasNext) {
+            Box(modifier = Modifier.size(step, 20.dp)) {
+                androidx.compose.foundation.Canvas(modifier = Modifier.matchParentSize()) {
+                    if (hasNext) {
+                        val x = size.width / 2f
+                        drawLine(
+                            color = Color(0xFF7A7A7A),
+                            start = Offset(x, 0f),
+                            end = Offset(x, size.height),
+                            strokeWidth = 1f
+                        )
+                    }
+                }
+            }
+        }
+        Box(modifier = Modifier.size(step, 20.dp)) {
+            androidx.compose.foundation.Canvas(modifier = Modifier.matchParentSize()) {
+                val x = size.width / 2f
+                val yMid = size.height / 2f
+                val color = Color(0xFF7A7A7A)
+                if (!isLast) {
+                    drawLine(color = color, start = Offset(x, 0f), end = Offset(x, size.height), strokeWidth = 1f)
+                } else {
+                    drawLine(color = color, start = Offset(x, 0f), end = Offset(x, yMid), strokeWidth = 1f)
+                }
+                drawLine(color = color, start = Offset(x, yMid), end = Offset(size.width, yMid), strokeWidth = 1f)
             }
         }
     }
@@ -407,7 +471,9 @@ private data class TreeNode(
 
 private data class TreeRow(
     val node: TreeNode,
-    val guide: String
+    val depth: Int,
+    val ancestorHasNext: List<Boolean>,
+    val isLast: Boolean
 )
 
 private fun buildTree(items: List<StorageItem>, basePath: String?): List<TreeNode> {
@@ -471,15 +537,12 @@ private fun appendNode(
     ancestorHasNext: List<Boolean>,
     isLast: Boolean
 ) {
-    val guide = buildString {
-        for (hasNext in ancestorHasNext) {
-            append(if (hasNext) "│  " else "   ")
-        }
-        if (depth > 0) {
-            append(if (isLast) "└─ " else "├─ ")
-        }
-    }
-    out += TreeRow(node, guide)
+    out += TreeRow(
+        node = node,
+        depth = depth,
+        ancestorHasNext = ancestorHasNext,
+        isLast = isLast
+    )
     val isExpanded = expanded[node.path] ?: false
     if (isExpanded) {
         val children = node.children.sortedByDescending { it.onDiskSizeBytes }
