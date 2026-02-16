@@ -29,3 +29,10 @@ MVP-приложение для Android, чтобы находить самые 
 - Пакетное удаление (multi-select)
 - Исключения по паттернам (`Android/data`, кэш-маски)
 - "Сухой" режим очистки (показать что удалится)
+
+## CI build on GitHub
+
+После каждого push/PR в `main` запускается workflow:
+- `.github/workflows/android-ci.yml`
+
+Готовый debug APK доступен в GitHub Actions как artifact `app-debug`.
