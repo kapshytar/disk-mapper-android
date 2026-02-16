@@ -7,9 +7,11 @@ import android.os.Environment
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,7 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
@@ -31,6 +33,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -44,24 +47,39 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kvita.diskmapper.data.StorageItem
 import java.util.Locale
 
-enum class FileFilter {
-    ALL, TELEGRAM, VIDEOS, ARCHIVES, INSTALLERS
-}
+/* ── constants ───────────────────────────────────────────────── */
+
+/** Height of every tree row — Canvas lines use the same value so connectors
+ *  touch perfectly across rows with zero gap.  */
+private val ROW_HEIGHT = 22.dp
+
+/** Horizontal step per tree depth level. */
+private val INDENT_STEP = 14.dp
+
+/** Color for tree branch guide lines. */
+private val GUIDE_COLOR = Color(0xFF888888)
+
+/* ── filters ─────────────────────────────────────────────────── */
+
+enum class FileFilter { ALL, TELEGRAM, VIDEOS, ARCHIVES, INSTALLERS }
+
+/* ── root screen ─────────────────────────────────────────────── */
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -92,9 +110,12 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
             when (filter) {
                 FileFilter.ALL -> true
                 FileFilter.TELEGRAM -> item.isTelegramRelated()
-                FileFilter.VIDEOS -> item.mimeType?.startsWith("video/") == true || item.name.endsWith(".mp4", true) || item.name.endsWith(".mkv", true)
-                FileFilter.ARCHIVES -> item.name.endsWith(".zip", true) || item.name.endsWith(".rar", true) || item.name.endsWith(".7z", true)
-                FileFilter.INSTALLERS -> item.name.endsWith(".apk", true) || item.name.endsWith(".xapk", true)
+                FileFilter.VIDEOS -> item.mimeType?.startsWith("video/") == true ||
+                    item.name.endsWith(".mp4", true) || item.name.endsWith(".mkv", true)
+                FileFilter.ARCHIVES -> item.name.endsWith(".zip", true) ||
+                    item.name.endsWith(".rar", true) || item.name.endsWith(".7z", true)
+                FileFilter.INSTALLERS -> item.name.endsWith(".apk", true) ||
+                    item.name.endsWith(".xapk", true)
             }
         }
     }
@@ -111,9 +132,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     }
     val treeRows = flattenTree(treeRoots, expandedMap.toMap())
 
-    LaunchedEffect(treeRoots) {
-        expandedMap.clear()
-    }
+    LaunchedEffect(treeRoots) { expandedMap.clear() }
 
     LaunchedEffect(state.errorMessage) {
         state.errorMessage?.let {
@@ -152,142 +171,138 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                item {
-                    ActionChip(
-                        title = if (state.selectedFolderUri == null) "Select folder" else "Change folder",
-                        enabled = !state.isScanning
-                    ) {
-                        UiTrace.ui("action select-folder")
-                        folderPicker.launch(null)
+            /* ── top controls: action chips ── */
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                ActionChip(
+                    title = if (state.selectedFolderUri == null) "Folder" else "Change",
+                    enabled = !state.isScanning
+                ) {
+                    UiTrace.ui("action select-folder")
+                    folderPicker.launch(null)
+                }
+                ActionChip("Root scan", enabled = !state.isScanning) {
+                    UiTrace.ui("action root-scan click")
+                    if (hasAllFilesAccess()) {
+                        vm.selectAllFilesRoot("/storage/emulated/0", context)
+                    } else {
+                        UiTrace.ui("request MANAGE_EXTERNAL_STORAGE")
+                        requestAllFilesAccess(context)
                     }
                 }
-                item {
-                    ActionChip(
-                        title = "Root scan",
-                        enabled = !state.isScanning
-                    ) {
-                        UiTrace.ui("action root-scan click")
-                        if (hasAllFilesAccess()) {
-                            vm.selectAllFilesRoot("/storage/emulated/0", context)
-                        } else {
-                            UiTrace.ui("request MANAGE_EXTERNAL_STORAGE")
-                            requestAllFilesAccess(context)
-                        }
-                    }
-                }
-                item {
-                    ActionChip(
-                        title = "Shizuku Android/",
-                        enabled = !state.isScanning
-                    ) {
-                        val telegramOnly = filter == FileFilter.TELEGRAM
-                        UiTrace.ui("action shizuku-scan telegramOnly=$telegramOnly")
-                        vm.scanAndroidPrivateWithShizuku(context, telegramOnly)
-                    }
+                ActionChip("Shizuku", enabled = !state.isScanning) {
+                    val telegramOnly = filter == FileFilter.TELEGRAM
+                    UiTrace.ui("action shizuku-scan telegramOnly=$telegramOnly")
+                    vm.scanAndroidPrivateWithShizuku(context, telegramOnly)
                 }
             }
 
+            /* ── filter chips row ── */
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Text(
-                    text = "D: ${formatBytes(state.rootOnDiskSizeBytes)}  L: ${formatBytes(state.rootLogicalSizeBytes)}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                if (!state.shizukuDiagnostics.isNullOrBlank()) {
-                    Text(
-                        text = "Shizuku: ${state.shizukuDiagnostics}",
-                        style = MaterialTheme.typography.bodySmall
+                for (f in FileFilter.entries) {
+                    FilterChip(
+                        selected = filter == f,
+                        onClick = {
+                            UiTrace.ui("filter ${f.name}")
+                            filter = f
+                        },
+                        label = { Text(f.name.lowercase().replaceFirstChar { it.uppercase() }, fontSize = 12.sp) }
                     )
                 }
             }
 
+            /* ── summary line ── */
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "D:${fmtBytes(state.rootOnDiskSizeBytes)}  L:${fmtBytes(state.rootLogicalSizeBytes)}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!state.shizukuDiagnostics.isNullOrBlank()) {
+                    Text(
+                        "Shizuku: ${state.shizukuDiagnostics}",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
             if (state.selectedRootPath != null) {
-                Text(text = "Root: ${state.selectedRootPath}", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Root: ${state.selectedRootPath}",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 10.dp)
+                )
             }
 
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                item {
-                    FilterChip("All", filter == FileFilter.ALL) {
-                        UiTrace.ui("filter ALL")
-                        filter = FileFilter.ALL
-                    }
-                }
-                item {
-                    FilterChip("Telegram", filter == FileFilter.TELEGRAM) {
-                        UiTrace.ui("filter TELEGRAM")
-                        filter = FileFilter.TELEGRAM
-                    }
-                }
-                item {
-                    FilterChip("Videos", filter == FileFilter.VIDEOS) {
-                        UiTrace.ui("filter VIDEOS")
-                        filter = FileFilter.VIDEOS
-                    }
-                }
-                item {
-                    FilterChip("Archives", filter == FileFilter.ARCHIVES) {
-                        UiTrace.ui("filter ARCHIVES")
-                        filter = FileFilter.ARCHIVES
-                    }
-                }
-                item {
-                    FilterChip("Installers", filter == FileFilter.INSTALLERS) {
-                        UiTrace.ui("filter INSTALLERS")
-                        filter = FileFilter.INSTALLERS
-                    }
-                }
-            }
-
+            /* ── scanning indicator ── */
             if (state.isScanning) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CircularProgressIndicator()
-                    Text("Scanning... nodes: ${state.visitedNodes}")
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("Scanning... ${state.visitedNodes}", fontSize = 12.sp)
                 }
             }
 
+            /* ── tree list ── */
             if (treeRows.isNotEmpty()) {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-                    items(treeRows.take(500), key = { it.node.path }) { row ->
-                        ItemCard(
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(treeRows.take(2000), key = { it.node.path }) { row ->
+                        TreeRowItem(
                             label = row.node.name.ifBlank { row.node.item?.name ?: "(folder)" },
                             depth = row.depth,
-                            ancestorHasNext = row.ancestorHasNext,
+                            guides = row.ancestorHasNext,
                             isLast = row.isLast,
                             item = row.node.item,
                             canExpand = row.node.children.isNotEmpty(),
                             expanded = expandedMap[row.node.path] ?: false,
-                            displayOnDiskBytes = row.node.onDiskSizeBytes,
-                            displayLogicalBytes = row.node.logicalSizeBytes,
-                            onToggleExpand = {
-                                val current = expandedMap[row.node.path] ?: false
-                                expandedMap[row.node.path] = !current
-                                UiTrace.ui("toggle path=${row.node.path} expanded=${!current}")
+                            onDiskBytes = row.node.onDiskSizeBytes,
+                            logicalBytes = row.node.logicalSizeBytes,
+                            onToggle = {
+                                val cur = expandedMap[row.node.path] ?: false
+                                expandedMap[row.node.path] = !cur
+                                UiTrace.ui("toggle path=${row.node.path} expanded=${!cur}")
                             },
                             onDelete = { row.node.item?.let { pendingDelete = it } }
                         )
                     }
                 }
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-                    items(filteredItems.take(300), key = { it.uri.toString() }) { item ->
-                        ItemCard(
+            } else if (!state.isScanning && filteredItems.isNotEmpty()) {
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(filteredItems.take(500), key = { it.uri.toString() }) { item ->
+                        TreeRowItem(
                             label = item.name,
                             depth = 0,
-                            ancestorHasNext = emptyList(),
+                            guides = emptyList(),
                             isLast = true,
                             item = item,
                             canExpand = false,
                             expanded = false,
-                            displayOnDiskBytes = item.onDiskSizeBytes,
-                            displayLogicalBytes = item.logicalSizeBytes,
-                            onToggleExpand = {},
+                            onDiskBytes = item.onDiskSizeBytes,
+                            logicalBytes = item.logicalSizeBytes,
+                            onToggle = {},
                             onDelete = { pendingDelete = item }
                         )
                     }
@@ -296,6 +311,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
         }
     }
 
+    /* ── delete dialog ── */
     if (pendingDelete != null) {
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
@@ -318,151 +334,167 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     }
 }
 
-@Composable
-private fun FilterChip(title: String, selected: Boolean, onClick: () -> Unit) {
-    AssistChip(onClick = onClick, label = { Text(title) }, leadingIcon = if (selected) ({ Text("*") }) else null)
-}
+/* ── chips ────────────────────────────────────────────────────── */
 
 @Composable
 private fun ActionChip(title: String, enabled: Boolean, onClick: () -> Unit) {
     AssistChip(
         onClick = onClick,
         enabled = enabled,
-        label = { Text(title) }
+        label = { Text(title, fontSize = 12.sp) }
     )
 }
 
+/* ── single tree row ─────────────────────────────────────────── */
+
 @Composable
-private fun ItemCard(
+private fun TreeRowItem(
     label: String,
     depth: Int,
-    ancestorHasNext: List<Boolean>,
+    guides: List<Boolean>,
     isLast: Boolean,
     item: StorageItem?,
     canExpand: Boolean,
     expanded: Boolean,
-    displayOnDiskBytes: Long,
-    displayLogicalBytes: Long,
-    onToggleExpand: () -> Unit,
+    onDiskBytes: Long,
+    logicalBytes: Long,
+    onToggle: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val isDir = item?.isDirectory == true || canExpand
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = canExpand) { onToggleExpand() }
-            .height(24.dp)
-            .padding(horizontal = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+            .height(ROW_HEIGHT)
+            .clickable(enabled = canExpand) { onToggle() }
+            .padding(end = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        /* ── left: tree guides + icon + name ── */
         Row(
-            modifier = Modifier
-                .weight(1f),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            // tree branch lines — one column per ancestor + one for current node
             if (depth > 0) {
-                TreeIndent(ancestorHasNext = ancestorHasNext, isLast = isLast)
+                TreeGuides(guides = guides, isLast = isLast)
             }
+
+            // expand arrow or spacer
             if (canExpand) {
                 Text(
-                    if (expanded) "▾" else "▸",
-                    style = MaterialTheme.typography.bodySmall
+                    if (expanded) "\u25BE" else "\u25B8",
+                    fontSize = 11.sp,
+                    modifier = Modifier.width(12.dp),
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             } else {
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(Modifier.width(12.dp))
             }
-            val isDir = item?.isDirectory == true || canExpand
+
+            // folder / file icon
             Icon(
                 imageVector = if (isDir) Icons.Default.Folder else Icons.Default.InsertDriveFile,
                 contentDescription = null,
-                modifier = Modifier.size(12.dp),
+                modifier = Modifier.size(14.dp),
                 tint = if (isDir) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(Modifier.width(3.dp))
+
+            // name
             Text(
                 label,
+                fontSize = 12.sp,
                 maxLines = 1,
-                style = MaterialTheme.typography.bodySmall
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface
             )
-            if (isDir) {
-                Spacer(modifier = Modifier.width(2.dp))
-            }
         }
+
+        /* ── right: sizes + delete ── */
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
+            Text("D:${fmtBytes(onDiskBytes)}", fontSize = 10.sp)
             Text(
-                text = "D:${formatBytes(displayOnDiskBytes)}",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Text(
-                text = "L:${formatBytes(displayLogicalBytes)}",
-                style = MaterialTheme.typography.bodySmall,
+                "L:${fmtBytes(logicalBytes)}",
+                fontSize = 10.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             if (item != null && !item.isDirectory) {
                 IconButton(onClick = onDelete, modifier = Modifier.size(20.dp)) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "Delete",
-                        modifier = Modifier.size(12.dp)
-                    )
+                    Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(12.dp))
                 }
             }
         }
     }
 }
 
+/* ── tree guide lines (X-plore style) ────────────────────────── */
+
+/**
+ * Draws the tree connector lines for a single row.
+ *
+ * [guides] — one boolean per ancestor depth level. `true` = that ancestor still
+ * has siblings below it → draw a full-height vertical line. `false` = gap.
+ *
+ * [isLast] — whether the current node is the last child at its level.
+ *  • last child   → L-corner (half vertical + horizontal)
+ *  • other child  → T-branch (full vertical + horizontal)
+ *
+ * Each column is [INDENT_STEP] wide × [ROW_HEIGHT] tall — matching the row
+ * height exactly so vertical lines connect across consecutive rows with no gap.
+ */
 @Composable
-private fun TreeIndent(
-    ancestorHasNext: List<Boolean>,
-    isLast: Boolean,
-    step: Dp = 10.dp
-) {
+private fun TreeGuides(guides: List<Boolean>, isLast: Boolean) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        for (hasNext in ancestorHasNext) {
-            Box(modifier = Modifier.size(step, 20.dp)) {
-                androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                    if (hasNext) {
+        // ancestor continuation columns
+        for (hasNext in guides) {
+            Box(modifier = Modifier.size(INDENT_STEP, ROW_HEIGHT)) {
+                if (hasNext) {
+                    Canvas(Modifier.fillMaxSize()) {
                         val x = size.width / 2f
-                        drawLine(
-                            color = Color(0xFF7A7A7A),
-                            start = Offset(x, 0f),
-                            end = Offset(x, size.height),
-                            strokeWidth = 1f
-                        )
+                        drawLine(GUIDE_COLOR, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
                     }
                 }
             }
         }
-        Box(modifier = Modifier.size(step, 20.dp)) {
-            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+        // current node column: T-branch or L-corner
+        Box(modifier = Modifier.size(INDENT_STEP, ROW_HEIGHT)) {
+            Canvas(Modifier.fillMaxSize()) {
                 val x = size.width / 2f
                 val yMid = size.height / 2f
-                val color = Color(0xFF7A7A7A)
-                if (!isLast) {
-                    drawLine(color = color, start = Offset(x, 0f), end = Offset(x, size.height), strokeWidth = 1f)
+                // vertical part
+                if (isLast) {
+                    // L-corner: top → mid
+                    drawLine(GUIDE_COLOR, Offset(x, 0f), Offset(x, yMid), strokeWidth = 1f)
                 } else {
-                    drawLine(color = color, start = Offset(x, 0f), end = Offset(x, yMid), strokeWidth = 1f)
+                    // T-branch: top → bottom
+                    drawLine(GUIDE_COLOR, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
                 }
-                drawLine(color = color, start = Offset(x, yMid), end = Offset(size.width, yMid), strokeWidth = 1f)
+                // horizontal stub: mid → right
+                drawLine(GUIDE_COLOR, Offset(x, yMid), Offset(size.width, yMid), strokeWidth = 1f)
             }
         }
     }
 }
 
-private fun formatBytes(bytes: Long): String {
-    if (bytes <= 0) return "0 B"
-    val units = arrayOf("B", "KB", "MB", "GB", "TB")
-    var value = bytes.toDouble()
+/* ── formatting ──────────────────────────────────────────────── */
+
+private fun fmtBytes(bytes: Long): String {
+    if (bytes <= 0) return "0"
+    val units = arrayOf("B", "K", "M", "G", "T")
+    var v = bytes.toDouble()
     var i = 0
-    while (value >= 1024 && i < units.lastIndex) {
-        value /= 1024.0
-        i++
-    }
-    return String.format(Locale.US, "%.2f %s", value, units[i])
+    while (v >= 1024 && i < units.lastIndex) { v /= 1024.0; i++ }
+    return if (i == 0) "${bytes}B"
+    else String.format(Locale.US, "%.1f%s", v, units[i])
 }
+
+@Suppress("unused")
+private fun formatBytes(bytes: Long): String = fmtBytes(bytes)
 
 private fun StorageItem.isTelegramRelated(): Boolean {
     val lowerName = name.lowercase(Locale.ROOT)
