@@ -5,4 +5,5 @@ interface IShizukuCleanerService {
     boolean deleteFile(String absolutePath);
     String diagnostics();
     String diskStats();
+    String trimCaches();
 }

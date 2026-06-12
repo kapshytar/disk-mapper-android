@@ -130,6 +130,34 @@ class ShizukuCleanerUserService : IShizukuCleanerService.Stub() {
         }.getOrElse { "" }
     }
 
+    /**
+     * Clears cache of ALL apps via `pm trim-caches`. Safe: apps rebuild caches
+     * on demand. Needs shell (Shizuku) privileges — normal apps cannot call it.
+     *
+     * Returns "ok;freedBytes=N;freeAfter=M" or "err;<message>".
+     */
+    override fun trimCaches(): String {
+        return runCatching {
+            val before = dataFreeBytes()
+            val process = ProcessBuilder("sh", "-c", "pm trim-caches 999G 2>&1")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            val exit = process.waitFor()
+            val after = dataFreeBytes()
+            if (exit != 0) {
+                "err;pm trim-caches exit=$exit ${output.take(200).trim()}"
+            } else {
+                "ok;freedBytes=${(after - before).coerceAtLeast(0L)};freeAfter=$after"
+            }
+        }.getOrElse { "err;${it.message}" }
+    }
+
+    private fun dataFreeBytes(): Long {
+        return runCatching { android.os.StatFs("/data").let { it.availableBlocksLong * it.blockSizeLong } }
+            .getOrDefault(0L)
+    }
+
     private fun isTelegramPath(path: String): Boolean {
         val lower = path.lowercase(Locale.ROOT)
         return lower.contains("telegram") ||

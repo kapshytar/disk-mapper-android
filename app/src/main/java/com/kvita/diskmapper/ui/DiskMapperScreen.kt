@@ -6,7 +6,9 @@ import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -75,7 +77,10 @@ private val ROW_HEIGHT = 22.dp
 private val INDENT_STEP = 14.dp
 
 /** Color for tree branch guide lines. */
-private val GUIDE_COLOR = Color(0xFF888888)
+private val GUIDE_COLOR = Color(0xFF555E6B)
+
+/** Background fill for the per-row size proportion bar. */
+private val BAR_COLOR = Color(0x26FFC107)
 
 /* ── filters ─────────────────────────────────────────────────── */
 
@@ -92,6 +97,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     var filter by remember { mutableStateOf(FileFilter.ALL) }
     var pendingDelete by remember { mutableStateOf<StorageItem?>(null) }
     var pendingShizukuRetry by remember { mutableStateOf(false) }
+    var pendingTrimCaches by remember { mutableStateOf(false) }
     val expandedMap = remember { mutableStateMapOf<String, Boolean>() }
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -149,10 +155,12 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
         }
     }
 
+    val rootBytesForBars = maxOf(state.rootOnDiskSizeBytes, 1L)
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Disk Mapper") },
+                title = { Text("Disk Mapper", fontSize = 17.sp) },
                 actions = {
                     IconButton(
                         onClick = {
@@ -217,6 +225,10 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 ActionChip("Apps", enabled = !state.isScanning) {
                     UiTrace.ui("action app-stats")
                     vm.scanAppStats(context)
+                }
+                ActionChip("Trim caches", enabled = !state.isScanning) {
+                    UiTrace.ui("action trim-caches click")
+                    pendingTrimCaches = true
                 }
             }
 
@@ -288,7 +300,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(treeRows.take(2000), key = { it.node.path }) { row ->
                         TreeRowItem(
-                            label = row.node.name.ifBlank { row.node.item?.name ?: "(folder)" },
+                            label = prettySegment(row.node.name.ifBlank { row.node.item?.name ?: "(folder)" }),
                             depth = row.depth,
                             guides = row.ancestorHasNext,
                             isLast = row.isLast,
@@ -297,6 +309,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                             expanded = expandedMap[row.node.path] ?: false,
                             onDiskBytes = row.node.onDiskSizeBytes,
                             logicalBytes = row.node.logicalSizeBytes,
+                            sizeFraction = row.node.onDiskSizeBytes.toFloat() / rootBytesForBars,
                             onToggle = {
                                 val cur = expandedMap[row.node.path] ?: false
                                 expandedMap[row.node.path] = !cur
@@ -319,6 +332,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                             expanded = false,
                             onDiskBytes = item.onDiskSizeBytes,
                             logicalBytes = item.logicalSizeBytes,
+                            sizeFraction = item.onDiskSizeBytes.toFloat() / rootBytesForBars,
                             onToggle = {},
                             onDelete = { pendingDelete = item }
                         )
@@ -326,6 +340,28 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 }
             }
         }
+    }
+
+    /* ── trim caches dialog ── */
+    if (pendingTrimCaches) {
+        AlertDialog(
+            onDismissRequest = { pendingTrimCaches = false },
+            title = { Text("Trim all app caches") },
+            text = { Text("Clear cache of ALL apps via Shizuku (pm trim-caches)? Safe: apps rebuild caches on demand. Can take up to a minute.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    UiTrace.ui("trim-caches confirm")
+                    pendingTrimCaches = false
+                    vm.trimAllCaches(context)
+                }) { Text("Trim") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    UiTrace.ui("trim-caches canceled")
+                    pendingTrimCaches = false
+                }) { Text("Cancel") }
+            }
+        )
     }
 
     /* ── delete dialog ── */
@@ -375,16 +411,61 @@ private fun TreeRowItem(
     expanded: Boolean,
     onDiskBytes: Long,
     logicalBytes: Long,
+    sizeFraction: Float,
     onToggle: () -> Unit,
     onDelete: () -> Unit
 ) {
     val isDir = item?.isDirectory == true || canExpand
 
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(ROW_HEIGHT)
             .clickable(enabled = canExpand) { onToggle() }
+    ) {
+        // TreeSize-style proportion bar: row background filled by share of root
+        if (sizeFraction > 0.005f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(sizeFraction.coerceIn(0f, 1f))
+                    .background(BAR_COLOR)
+            )
+        }
+        TreeRowContent(
+            label = label,
+            depth = depth,
+            guides = guides,
+            isLast = isLast,
+            item = item,
+            canExpand = canExpand,
+            expanded = expanded,
+            onDiskBytes = onDiskBytes,
+            logicalBytes = logicalBytes,
+            isDir = isDir,
+            onDelete = onDelete
+        )
+    }
+}
+
+@Composable
+private fun TreeRowContent(
+    label: String,
+    depth: Int,
+    guides: List<Boolean>,
+    isLast: Boolean,
+    item: StorageItem?,
+    canExpand: Boolean,
+    expanded: Boolean,
+    onDiskBytes: Long,
+    logicalBytes: Long,
+    isDir: Boolean,
+    onDelete: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(ROW_HEIGHT)
             .padding(end = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -434,7 +515,7 @@ private fun TreeRowItem(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Text("D:${fmtBytes(onDiskBytes)}", fontSize = 10.sp)
+            Text("D:${fmtBytes(onDiskBytes)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
             Text(
                 "L:${fmtBytes(logicalBytes)}",
                 fontSize = 10.sp,
@@ -496,6 +577,17 @@ private fun TreeGuides(guides: List<Boolean>, isLast: Boolean) {
             }
         }
     }
+}
+
+/** Human-readable names for synthetic /storage-map tree segments. */
+private fun prettySegment(name: String): String = when (name) {
+    "per-app" -> "By app (APK+data+cache)"
+    "apps-apk-by-app" -> "APK by app"
+    "apps-data-by-app" -> "Data by app"
+    "apps-cache-by-app" -> "Cache by app"
+    "categories" -> "Categories"
+    "storage-map" -> "Storage map"
+    else -> name
 }
 
 /* ── formatting ──────────────────────────────────────────────── */

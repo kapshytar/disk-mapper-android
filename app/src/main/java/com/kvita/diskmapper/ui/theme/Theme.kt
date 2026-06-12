@@ -1,30 +1,31 @@
-﻿package com.kvita.diskmapper.ui.theme
+package com.kvita.diskmapper.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 
-private val LightColors = lightColorScheme(
-    primary = DeepBlue,
-    secondary = Steel,
-    tertiary = Mint,
-    background = Sand,
-    error = Orange
-)
-
+// Always-dark compact theme: this is a disk tree tool, not a Material showcase.
 private val DarkColors = darkColorScheme(
-    primary = Sand,
-    secondary = Mint,
-    tertiary = Orange
+    primary = AccentBlue,
+    onPrimary = Ink,
+    secondary = AccentAmber,
+    tertiary = AccentAmber,
+    background = Ink,
+    onBackground = TextMain,
+    surface = Ink,
+    onSurface = TextMain,
+    surfaceVariant = InkVariant,
+    onSurfaceVariant = TextDim,
+    surfaceContainer = InkSurface,
+    surfaceContainerHigh = InkSurface,
+    error = DangerRed
 )
 
 @Composable
 fun DiskMapperTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = LightColors,
+        colorScheme = DarkColors,
         typography = Typography,
         content = content
     )
 }
-

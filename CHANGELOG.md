@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Added `Trim caches` action: clears ALL app caches via Shizuku (`pm trim-caches`),
+  with confirmation dialog and freed-bytes report in snackbar.
+- ShizukuBridge: service calls now run on the caller's thread (not the binder
+  main-thread callback), with per-call timeout (120s for trim).
 - Added one-tap Shizuku flow:
   - auto-open Shizuku app when needed,
   - auto-retry Android private scan on return to app.

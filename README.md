@@ -1,60 +1,64 @@
-﻿# Disk Mapper (Android)
+# Disk Mapper (Android)
 
-Инструмент для анализа памяти Android: показывает, куда уходит место, в древовидном виде (похоже на X-plore/TreeSize).
+Android storage analysis tool: shows where disk space actually goes, as an expandable tree (think X-plore / TreeSize).
 
-## Основная идея
-Приложение отвечает на вопрос: "Почему занято ~95-100 ГБ, если в обычных папках видно меньше?".
+## Core idea
+The app answers one question: "Why is ~95-100 GB used when regular folders show much less?"
 
-Для этого есть два режима анализа:
-- файловое дерево (`Root scan`, `Shizuku`),
-- системная разбивка по категориям и приложениям (`Apps`).
+Two analysis modes:
+- file tree (`Root scan`, `Shizuku`),
+- system-level breakdown by categories and apps (`Apps`).
 
-## Что умеет сейчас
-- `Root scan` для `/storage/emulated/0` (через All files access).
-- `Shizuku`-скан `Android/data` и `Android/obb`.
-- `Apps`-режим с полной категоризацией из `dumpsys diskstats`:
+## Current features
+- `Root scan` of `/storage/emulated/0` (via All files access).
+- `Shizuku` scan of `Android/data` and `Android/obb`.
+- `Apps` mode with full categorization from `dumpsys diskstats`:
   - `apps-apk`, `apps-data`, `apps-cache`, `system`, `other`, `photos`, `videos`, `audio`, `free`.
-- Детализация по приложениям:
-  - `per-app` (общий размер по приложению),
-  - `apps-apk-by-app`,
-  - `apps-data-by-app`,
-  - `apps-cache-by-app`.
-- Два размера для каждого узла:
-  - `D` - реально занято на диске (allocated/on-disk),
-  - `L` - логический размер данных (без кластерного оверхеда).
-- Сворачиваемое/раскрываемое дерево.
-- Фильтры: `All`, `Telegram`, `Videos`, `Archives`, `Installers`.
+- Per-app drill-down:
+  - by app (total APK+data+cache),
+  - APK by app,
+  - data by app,
+  - cache by app.
+- `Trim caches` action: clears caches of ALL apps in one tap via Shizuku
+  (`pm trim-caches`) — safe, apps rebuild caches on demand; reports freed bytes.
+- Two sizes for every node:
+  - `D` - actually allocated on disk (on-disk),
+  - `L` - logical data size (without cluster overhead).
+- Collapsible/expandable tree with proportional size bars per row (TreeSize-style).
+- Dark compact file-manager UI.
+- Filters: `All`, `Telegram`, `Videos`, `Archives`, `Installers`.
 
-## Как пользоваться
-1. Запусти приложение.
-2. Нажми `Apps` для общей картины "куда уходит место".
-3. Смотри блок `categories` как основную несуммирующуюся сводку.
-4. Для поиска конкретных виновников раскрой:
-   - `per-app` (топ по общему размеру),
-   - `apps-data-by-app` (топ по данным),
-   - `apps-cache-by-app` (топ по кэшу).
-5. Для проверки пользовательских папок нажми `Root scan`.
-6. Для `Android/data` и `Android/obb` используй `Shizuku`.
+## How to use
+1. Launch the app.
+2. Tap `Apps` for the big picture of where space goes.
+3. Treat the categories block as the primary non-overlapping summary.
+4. To find specific offenders, expand:
+   - by-app totals (top by overall size),
+   - data by app (top by app data),
+   - cache by app (top by cache).
+5. Tap `Trim caches` to clear all app caches at once (needs Shizuku).
+6. For user folders, tap `Root scan`.
+7. For `Android/data` and `Android/obb`, use `Shizuku`.
 
-## Важно про математику
-- `categories` - базовая сводка used/free.
-- `per-app` и `*-by-app` - это другие представления тех же app-байт.
-- Их нельзя складывать друг с другом и с `categories`, иначе получится "больше 100%".
+## Math caveat
+- Categories are the base used/free summary.
+- Per-app views are alternative representations of the same app bytes.
+- Do not sum them with each other or with categories — you would get "more than 100%".
 
-## Разрешения и доступы
-- `Usage Access` нужен для корректной app-детализации.
-- `Shizuku` нужен для полноценного доступа к `Android/data`/`obb`.
-- Без Shizuku на части прошивок Android private-папки видны неполно.
+## Permissions and access
+- `Usage Access` is required for proper per-app detail.
+- `Shizuku` is required for full access to `Android/data`/`obb` and for `Trim caches`.
+- Without Shizuku, Android private folders are only partially visible on some ROMs.
 
-## Ограничения
-- На некоторых прошивках даже с Shizuku (режим shell/uid 2000) доступ к части private-данных может быть ограничен.
-- UI показывает доступные данные и явно пишет долю видимых app-байт (`Apps visible: X / Y`).
+## Limitations
+- On some ROMs, even with Shizuku (shell mode / uid 2000), access to some private data may be restricted.
+- The UI shows what is accessible and explicitly reports the visible share of app bytes (`Apps visible: X / Y`).
 
-## Сборка и запуск из исходников
-1. Открой проект в Android Studio.
-2. Выполни Gradle sync.
-3. Собери и установи debug APK.
+## Building from source
+1. Open the project in Android Studio.
+2. Run Gradle sync.
+3. Build and install the debug APK.
 
 ## CI / APK
 - Workflow: `.github/workflows/android-ci.yml`
-- После каждого push в `main` публикуется артефакт `app-debug` в GitHub Actions.
+- Every push to `main` publishes an `app-debug` artifact in GitHub Actions.

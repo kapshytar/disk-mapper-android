@@ -365,6 +365,58 @@ class DiskMapperViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Clears caches of ALL apps via Shizuku (`pm trim-caches`). Safe — apps
+     * rebuild caches on demand. Reports freed bytes in a snackbar and rescans
+     * app stats so the tree reflects the new state.
+     */
+    fun trimAllCaches(context: Context) {
+        UiTrace.vm("trimAllCaches start")
+        when (shizukuBridge.ensurePermission()) {
+            ShizukuBridge.PermissionState.READY -> Unit
+            ShizukuBridge.PermissionState.PERMISSION_REQUESTED -> {
+                _uiState.update { it.copy(errorMessage = "Shizuku permission requested. Confirm and tap again.") }
+                return
+            }
+            ShizukuBridge.PermissionState.PERMISSION_DENIED -> {
+                _uiState.update { it.copy(errorMessage = "Shizuku permission denied.") }
+                return
+            }
+            ShizukuBridge.PermissionState.SHIZUKU_NOT_RUNNING -> {
+                _uiState.update { it.copy(errorMessage = "Shizuku is not running. Start Shizuku first.") }
+                return
+            }
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isScanning = true, errorMessage = null) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching { shizukuBridge.trimCaches(context.applicationContext) }
+            }
+            result.onSuccess { raw ->
+                UiTrace.vm("trimAllCaches result=$raw")
+                if (raw.startsWith("ok;")) {
+                    val freed = Regex("freedBytes=(\\d+)").find(raw)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                    _uiState.update {
+                        it.copy(isScanning = false, errorMessage = "Caches trimmed, freed ${formatBytes(freed)}")
+                    }
+                    if (_uiState.value.scanSource == ScanSource.APP_STATS) {
+                        scanAppStats(context)
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(isScanning = false, errorMessage = "Trim caches failed: ${raw.removePrefix("err;")}")
+                    }
+                }
+            }.onFailure { throwable ->
+                UiTrace.error("trimAllCaches failed", throwable)
+                _uiState.update {
+                    it.copy(isScanning = false, errorMessage = throwable.message ?: "Trim caches failed")
+                }
+            }
+        }
+    }
+
     fun clearError() {
         _uiState.update { it.copy(errorMessage = null) }
     }

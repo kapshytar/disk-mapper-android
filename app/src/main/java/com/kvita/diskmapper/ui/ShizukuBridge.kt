@@ -77,17 +77,26 @@ class ShizukuBridge {
         }
     }
 
+    suspend fun trimCaches(context: Context): String {
+        // Trimming caches on a full disk can take tens of seconds.
+        return withService(context, timeoutMs = 120_000L) { service ->
+            service.trimCaches()
+        }
+    }
+
     private suspend fun <T> withService(
         context: Context,
+        timeoutMs: Long = 15000L,
         block: (IShizukuCleanerService) -> T
     ): T {
         return serviceCallMutex.withLock {
-            withServiceInternal(context, block)
+            withServiceInternal(context, timeoutMs, block)
         }
     }
 
     private suspend fun <T> withServiceInternal(
         context: Context,
+        timeoutMs: Long,
         block: (IShizukuCleanerService) -> T
     ): T {
         val args = Shizuku.UserServiceArgs(
@@ -99,45 +108,48 @@ class ShizukuBridge {
             .version(BuildConfig.VERSION_CODE)
             .tag("diskmapper-cleaner")
 
-        return withTimeout(15000L) {
-            suspendCancellableCoroutine { continuation ->
-                val consumed = AtomicBoolean(false)
-                val unbound = AtomicBoolean(false)
-                val connection = object : ServiceConnection {
-                    override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-                        if (!consumed.compareAndSet(false, true)) return
-                        val service = IShizukuCleanerService.Stub.asInterface(binder)
-                        if (service == null) {
-                            scheduleUnbind(args, this, unbound)
-                            continuation.resumeWithException(IllegalStateException("Shizuku service bind failed"))
-                            return
+        val unbound = AtomicBoolean(false)
+        var boundConnection: ServiceConnection? = null
+        try {
+            // Bind on the main callback, but run [block] on the caller's thread
+            // (Dispatchers.IO in the ViewModel) so long binder calls like
+            // trimCaches do not block the main thread.
+            val service = withTimeout(timeoutMs) {
+                suspendCancellableCoroutine<IShizukuCleanerService> { continuation ->
+                    val consumed = AtomicBoolean(false)
+                    val connection = object : ServiceConnection {
+                        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                            if (!consumed.compareAndSet(false, true)) return
+                            val service = IShizukuCleanerService.Stub.asInterface(binder)
+                            if (service == null) {
+                                scheduleUnbind(args, this, unbound)
+                                continuation.resumeWithException(IllegalStateException("Shizuku service bind failed"))
+                                return
+                            }
+                            continuation.resume(service)
                         }
-                        try {
-                            val result = block(service)
-                            continuation.resume(result)
-                        } catch (t: Throwable) {
-                            continuation.resumeWithException(t)
-                        } finally {
-                            // Unbind outside the callback stack to avoid CME in Shizuku internals.
-                            scheduleUnbind(args, this, unbound)
+
+                        override fun onServiceDisconnected(name: ComponentName?) {
                         }
                     }
+                    boundConnection = connection
 
-                    override fun onServiceDisconnected(name: ComponentName?) {
+                    continuation.invokeOnCancellation {
+                        scheduleUnbind(args, connection, unbound)
                     }
-                }
 
-                continuation.invokeOnCancellation {
-                    scheduleUnbind(args, connection, unbound)
-                }
-
-                runCatching {
-                    Shizuku.bindUserService(args, connection)
-                }.onFailure {
-                    consumed.set(true)
-                    continuation.resumeWithException(it)
+                    runCatching {
+                        Shizuku.bindUserService(args, connection)
+                    }.onFailure {
+                        consumed.set(true)
+                        continuation.resumeWithException(it)
+                    }
                 }
             }
+            return block(service)
+        } finally {
+            // Unbind outside the callback stack to avoid CME in Shizuku internals.
+            boundConnection?.let { scheduleUnbind(args, it, unbound) }
         }
     }
 
