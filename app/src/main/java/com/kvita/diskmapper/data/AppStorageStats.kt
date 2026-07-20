@@ -1,20 +1,17 @@
 package com.kvita.diskmapper.data
 
+import android.app.AppOpsManager
 import android.app.usage.StorageStatsManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Process
 import android.os.storage.StorageManager
-import com.kvita.diskmapper.ui.UiTrace
 
 /**
- * Combines two data sources to show complete storage picture:
- *
- * 1. **Category totals** via `dumpsys diskstats` — gives accurate system-level
- *    breakdown (Apps 32GB, App Data 25GB, Photos 2GB, System 20GB, etc.)
- *
- * 2. **Per-app breakdown** via [StorageStatsManager] — shows individual app
- *    sizes (APK + data + cache) for apps accessible to the current user.
+ * Uses Android's public [StorageStatsManager] API for both device categories
+ * and per-app details. Cache is a subset of dataBytes, so exposed data values
+ * exclude cache to keep every displayed category non-overlapping.
  */
 object AppStorageStats {
 
@@ -27,7 +24,7 @@ object AppStorageStats {
         val totalBytes: Long
     )
 
-    /** Category-level storage totals from dumpsys diskstats. */
+    /** Non-overlapping category-level storage totals. */
     data class CategoryBreakdown(
         val appSize: Long = 0,
         val appDataSize: Long = 0,
@@ -48,61 +45,93 @@ object AppStorageStats {
         val apps: List<AppUsage>
     )
 
-    fun queryFull(context: Context, diskStatsRaw: String? = null): FullStorageInfo {
-        val categories = if (!diskStatsRaw.isNullOrBlank()) {
-            parseDiskStats(diskStatsRaw)
-        } else {
-            queryCategoryBreakdown()
+    internal data class RawCategoryStats(
+        val appBytes: Long,
+        val dataBytesIncludingCache: Long,
+        val cacheBytes: Long,
+        val externalTotalBytes: Long,
+        val externalAppBytes: Long,
+        val imageBytes: Long,
+        val videoBytes: Long,
+        val audioBytes: Long,
+        val totalCapacity: Long,
+        val totalFree: Long
+    )
+
+    fun queryFull(context: Context): FullStorageInfo {
+        if (!hasUsageAccess(context)) {
+            throw SecurityException("Usage access is required")
         }
-        val apps = if (!diskStatsRaw.isNullOrBlank()) {
-            val parsed = parsePerAppFromDiskStats(context, diskStatsRaw)
-            if (parsed.isNotEmpty()) parsed else queryPerApp(context)
-        } else {
-            queryPerApp(context)
-        }
-        return FullStorageInfo(categories, apps)
+        return FullStorageInfo(
+            categories = queryCategoryBreakdown(context),
+            apps = queryPerApp(context)
+        )
     }
 
-    /**
-     * Parse `dumpsys diskstats` for category-level totals.
-     * No special permissions needed.
-     */
-    private fun queryCategoryBreakdown(): CategoryBreakdown {
-        return try {
-            val process = ProcessBuilder("sh", "-c", "dumpsys diskstats 2>/dev/null")
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().use { it.readText() }
-            process.waitFor()
-            parseDiskStats(output)
-        } catch (e: Exception) {
-            UiTrace.error("queryCategoryBreakdown failed", e)
-            CategoryBreakdown()
-        }
+    @Suppress("DEPRECATION")
+    fun hasUsageAccess(context: Context): Boolean {
+        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager
+            ?: return false
+        return appOps.checkOpNoThrow(
+            AppOpsManager.OPSTR_GET_USAGE_STATS,
+            Process.myUid(),
+            context.packageName
+        ) == AppOpsManager.MODE_ALLOWED
     }
 
-    internal fun parseDiskStats(output: String): CategoryBreakdown {
-        fun extract(key: String): Long {
-            val regex = Regex("$key:\\s*(\\d+)")
-            return regex.find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-        }
-        val dataFreeMatch = Regex("Data-Free:\\s*(\\d+)K\\s*/\\s*(\\d+)K").find(output)
-        val freeK = dataFreeMatch?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-        val totalK = dataFreeMatch?.groupValues?.get(2)?.toLongOrNull() ?: 0L
+    private fun queryCategoryBreakdown(context: Context): CategoryBreakdown {
+        val manager = context.getSystemService(Context.STORAGE_STATS_SERVICE) as? StorageStatsManager
+            ?: return CategoryBreakdown()
+        val uuid = StorageManager.UUID_DEFAULT
+        val user = Process.myUserHandle()
+        val appStats = manager.queryStatsForUser(uuid, user)
+        val external = manager.queryExternalStatsForUser(uuid, user)
+        val total = manager.getTotalBytes(uuid)
+        val free = manager.getFreeBytes(uuid)
+        return calculateCategoryBreakdown(
+            RawCategoryStats(
+                appBytes = appStats.appBytes,
+                dataBytesIncludingCache = appStats.dataBytes,
+                cacheBytes = appStats.cacheBytes,
+                externalTotalBytes = external.totalBytes,
+                externalAppBytes = external.appBytes,
+                imageBytes = external.imageBytes,
+                videoBytes = external.videoBytes,
+                audioBytes = external.audioBytes,
+                totalCapacity = total,
+                totalFree = free
+            )
+        )
+    }
+
+    internal fun calculateCategoryBreakdown(raw: RawCategoryStats): CategoryBreakdown {
+        val used = (raw.totalCapacity - raw.totalFree).coerceAtLeast(0L)
+        val app = raw.appBytes.coerceAtLeast(0L)
+        val cache = raw.cacheBytes.coerceAtLeast(0L)
+        val dataWithoutCache = (raw.dataBytesIncludingCache - cache).coerceAtLeast(0L)
+        val images = raw.imageBytes.coerceAtLeast(0L)
+        val videos = raw.videoBytes.coerceAtLeast(0L)
+        val audio = raw.audioBytes.coerceAtLeast(0L)
+        val sharedOther = (
+            // External app bytes are already included in per-app StorageStats.
+            // Subtract them here so shared storage is not counted twice.
+            raw.externalTotalBytes.coerceAtLeast(0L) - raw.externalAppBytes.coerceAtLeast(0L) -
+                images - videos - audio
+            ).coerceAtLeast(0L)
+        val accounted = app + dataWithoutCache + cache + images + videos + audio + sharedOther
 
         return CategoryBreakdown(
-            appSize = extract("App Size"),
-            appDataSize = extract("App Data Size"),
-            appCacheSize = extract("App Cache Size"),
-            photosSize = extract("Photos Size"),
-            videosSize = extract("Videos Size"),
-            audioSize = extract("Audio Size"),
-            downloadsSize = extract("Downloads Size"),
-            systemSize = extract("System Size"),
-            otherSize = extract("Other Size"),
-            totalCapacity = totalK * 1024L,
-            totalFree = freeK * 1024L,
-            totalUsed = (totalK - freeK) * 1024L
+            appSize = app,
+            appDataSize = dataWithoutCache,
+            appCacheSize = cache,
+            photosSize = images,
+            videosSize = videos,
+            audioSize = audio,
+            systemSize = (used - accounted).coerceAtLeast(0L),
+            otherSize = sharedOther,
+            totalCapacity = raw.totalCapacity.coerceAtLeast(0L),
+            totalFree = raw.totalFree.coerceAtLeast(0L),
+            totalUsed = used
         )
     }
 
@@ -118,8 +147,8 @@ object AppStorageStats {
             try {
                 val stats = ssm.queryStatsForPackage(uuid, app.packageName, android.os.Process.myUserHandle())
                 val appBytes = stats.appBytes
-                val dataBytes = stats.dataBytes
                 val cacheBytes = stats.cacheBytes
+                val dataBytes = (stats.dataBytes - cacheBytes).coerceAtLeast(0L)
                 val total = appBytes + dataBytes + cacheBytes
                 if (total <= 0) continue
                 val label = try {
@@ -134,63 +163,6 @@ object AppStorageStats {
         }
         result.sortByDescending { it.totalBytes }
         return result
-    }
-
-    private fun parsePerAppFromDiskStats(context: Context, output: String): List<AppUsage> {
-        fun section(prefix: String): String? {
-            val regex = Regex("$prefix:\\s*\\[(.*?)]", setOf(RegexOption.DOT_MATCHES_ALL))
-            return regex.find(output)?.groupValues?.getOrNull(1)
-        }
-
-        fun parseQuotedList(content: String?): List<String> {
-            if (content.isNullOrBlank()) return emptyList()
-            return Regex("\"([^\"]+)\"")
-                .findAll(content)
-                .map { it.groupValues[1] }
-                .toList()
-        }
-
-        fun parseLongList(content: String?): List<Long> {
-            if (content.isNullOrBlank()) return emptyList()
-            return content
-                .split(',')
-                .mapNotNull { it.trim().toLongOrNull() }
-        }
-
-        val packageNames = parseQuotedList(section("Package Names"))
-        val appSizes = parseLongList(section("App Sizes"))
-        val dataSizes = parseLongList(section("App Data Sizes"))
-        val cacheSizes = parseLongList(section("Cache Sizes"))
-        if (packageNames.isEmpty() || appSizes.isEmpty() || dataSizes.isEmpty()) return emptyList()
-
-        val pm = context.packageManager
-        val count = minOf(packageNames.size, appSizes.size, dataSizes.size)
-        val out = ArrayList<AppUsage>(count)
-        for (i in 0 until count) {
-            val pkg = packageNames[i]
-            val appBytes = appSizes[i]
-            val dataBytes = dataSizes[i]
-            val cacheBytes = cacheSizes.getOrNull(i) ?: 0L
-            val total = appBytes + dataBytes + cacheBytes
-            if (total <= 0L) continue
-
-            val label = runCatching {
-                val appInfo = pm.getApplicationInfo(pkg, 0)
-                pm.getApplicationLabel(appInfo).toString()
-            }.getOrElse { pkg }
-
-            out += AppUsage(
-                packageName = pkg,
-                label = label,
-                appBytes = appBytes,
-                dataBytes = dataBytes,
-                cacheBytes = cacheBytes,
-                totalBytes = total
-            )
-        }
-
-        out.sortByDescending { it.totalBytes }
-        return out
     }
 
     /** Convert full info to StorageItems for tree UI. */

@@ -1,6 +1,16 @@
 # Changelog
 
 ## Unreleased
+- Removed the Shizuku dependency from `Apps`: totals and per-app sizes now use public `StorageStatsManager` APIs with Usage Access.
+- Fixed double-counting of cache bytes (`StorageStats.dataBytes` already includes cache).
+- Fixed private scan totals by emitting and counting only explicit `Android/data` and `Android/obb` root records.
+- Fixed Root + private merge to atomically replace the old private subtree instead of mixing stale rows.
+- Added a bounded largest-files list to private scans so heavy files can be deleted from results.
+- Restricted privileged deletion to canonical paths inside `Android/data` and `Android/obb`.
+- Added system cache-cleanup fallback when Shizuku is unavailable.
+- Added access coverage status, permission auto-retry, contextual filters, background tree construction, visible truncation notice, and larger tree rows.
+- Added unit coverage for non-overlapping app categories and private-root accounting.
+- CI now runs unit tests and Android lint before publishing the debug APK artifact.
 - Added `Trim caches` action: clears ALL app caches via Shizuku (`pm trim-caches`),
   with confirmation dialog and freed-bytes report in snackbar.
 - ShizukuBridge: service calls now run on the caller's thread (not the binder

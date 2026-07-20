@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import android.os.storage.StorageManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -25,9 +26,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -50,6 +51,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -65,13 +67,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kvita.diskmapper.data.StorageItem
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /* ── constants ───────────────────────────────────────────────── */
 
 /** Height of every tree row — Canvas lines use the same value so connectors
  *  touch perfectly across rows with zero gap.  */
-private val ROW_HEIGHT = 22.dp
+private val ROW_HEIGHT = 32.dp
 
 /** Horizontal step per tree depth level. */
 private val INDENT_STEP = 14.dp
@@ -81,6 +85,8 @@ private val GUIDE_COLOR = Color(0xFF555E6B)
 
 /** Background fill for the per-row size proportion bar. */
 private val BAR_COLOR = Color(0x26FFC107)
+
+private const val MAX_VISIBLE_ROWS = 2000
 
 /* ── filters ─────────────────────────────────────────────────── */
 
@@ -97,7 +103,10 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     var filter by remember { mutableStateOf(FileFilter.ALL) }
     var pendingDelete by remember { mutableStateOf<StorageItem?>(null) }
     var pendingShizukuRetry by remember { mutableStateOf(false) }
+    var pendingUsageRetry by remember { mutableStateOf(false) }
+    var pendingAllFilesRetry by remember { mutableStateOf(false) }
     var pendingTrimCaches by remember { mutableStateOf(false) }
+    var resumeTick by remember { mutableStateOf(0) }
     val expandedMap = remember { mutableStateMapOf<String, Boolean>() }
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -106,12 +115,33 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
         vm.restorePersistedFolder(context)
     }
 
-    DisposableEffect(lifecycleOwner, pendingShizukuRetry, filter) {
+    DisposableEffect(
+        lifecycleOwner,
+        pendingShizukuRetry,
+        pendingUsageRetry,
+        pendingAllFilesRetry,
+        filter
+    ) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME && pendingShizukuRetry) {
-                UiTrace.ui("auto-retry shizuku scan on resume")
-                pendingShizukuRetry = false
-                vm.scanAndroidPrivateWithShizuku(context, filter == FileFilter.TELEGRAM)
+            if (event == Lifecycle.Event.ON_RESUME) {
+                resumeTick++
+                if (pendingShizukuRetry) {
+                    UiTrace.ui("auto-retry shizuku scan on resume")
+                    pendingShizukuRetry = false
+                    vm.scanAndroidPrivateWithShizuku(context, filter == FileFilter.TELEGRAM)
+                }
+                if (pendingUsageRetry) {
+                    UiTrace.ui("auto-retry app stats on resume")
+                    pendingUsageRetry = false
+                    if (vm.hasUsageAccess(context)) vm.scanAppStats(context)
+                }
+                if (pendingAllFilesRetry) {
+                    UiTrace.ui("auto-retry shared files scan on resume")
+                    pendingAllFilesRetry = false
+                    if (hasAllFilesAccess()) {
+                        vm.selectAllFilesRoot(sharedStorageRoot(), context)
+                    }
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -136,13 +166,19 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     val treeBasePath = remember(state.scanSource, state.selectedRootPath) {
         when (state.scanSource) {
             ScanSource.ALL_FILES -> state.selectedRootPath
-            ScanSource.SHIZUKU_ANDROID -> "/storage/emulated/0/Android"
+            ScanSource.SHIZUKU_ANDROID -> state.selectedRootPath
             ScanSource.APP_STATS -> "/storage-map"
             ScanSource.SAF -> null
         }
     }
-    val treeRoots = remember(filteredItems, treeBasePath) {
-        buildTree(filteredItems, treeBasePath)
+    val treeRoots by produceState<List<TreeNode>>(
+        initialValue = emptyList(),
+        filteredItems,
+        treeBasePath
+    ) {
+        value = withContext(Dispatchers.Default) {
+            buildTree(filteredItems, treeBasePath)
+        }
     }
     val treeRows = flattenTree(treeRoots, expandedMap.toMap())
 
@@ -156,6 +192,16 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
     }
 
     val rootBytesForBars = maxOf(state.rootOnDiskSizeBytes, 1L)
+    val accessStatus = remember(resumeTick) {
+        buildString {
+            append("Access  Files: ")
+            append(if (hasAllFilesAccess()) "full" else "setup")
+            append("  •  Apps: ")
+            append(if (vm.hasUsageAccess(context)) "full" else "setup")
+            append("  •  Private: ")
+            append(if (vm.hasShizukuAccess()) "enabled" else "optional")
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -200,16 +246,16 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                ActionChip("Root scan", enabled = !state.isScanning) {
+                ActionChip("Shared files", enabled = !state.isScanning) {
                     UiTrace.ui("action root-scan click")
                     if (hasAllFilesAccess()) {
-                        vm.selectAllFilesRoot("/storage/emulated/0", context)
+                        vm.selectAllFilesRoot(sharedStorageRoot(), context)
                     } else {
                         UiTrace.ui("request MANAGE_EXTERNAL_STORAGE")
-                        requestAllFilesAccess(context)
+                        pendingAllFilesRetry = requestAllFilesAccess(context)
                     }
                 }
-                ActionChip("Shizuku", enabled = !state.isScanning) {
+                ActionChip("Private files", enabled = !state.isScanning) {
                     val telegramOnly = filter == FileFilter.TELEGRAM
                     UiTrace.ui("action shizuku-scan telegramOnly=$telegramOnly")
                     when (vm.scanAndroidPrivateWithShizuku(context, telegramOnly)) {
@@ -224,33 +270,46 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 }
                 ActionChip("Apps", enabled = !state.isScanning) {
                     UiTrace.ui("action app-stats")
-                    vm.scanAppStats(context)
+                    if (vm.hasUsageAccess(context)) {
+                        vm.scanAppStats(context)
+                    } else {
+                        pendingUsageRetry = requestUsageAccess(context)
+                    }
                 }
-                ActionChip("Trim caches", enabled = !state.isScanning) {
+                ActionChip("Clear caches", enabled = !state.isScanning) {
                     UiTrace.ui("action trim-caches click")
                     pendingTrimCaches = true
                 }
             }
 
             /* ── filter chips row ── */
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                for (f in FileFilter.entries) {
-                    FilterChip(
-                        selected = filter == f,
-                        onClick = {
-                            UiTrace.ui("filter ${f.name}")
-                            filter = f
-                        },
-                        label = { Text(f.name.lowercase().replaceFirstChar { it.uppercase() }, fontSize = 12.sp) }
-                    )
+            if (state.scanSource != ScanSource.APP_STATS) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    for (f in FileFilter.entries) {
+                        FilterChip(
+                            selected = filter == f,
+                            onClick = {
+                                UiTrace.ui("filter ${f.name}")
+                                filter = f
+                            },
+                            label = { Text(f.name.lowercase().replaceFirstChar { it.uppercase() }, fontSize = 12.sp) }
+                        )
+                    }
                 }
             }
+
+            Text(
+                accessStatus,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp)
+            )
 
             /* ── summary line ── */
             Row(
@@ -261,13 +320,13 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "D:${fmtBytes(state.rootOnDiskSizeBytes)}  L:${fmtBytes(state.rootLogicalSizeBytes)}",
+                    "D≈${fmtBytes(state.rootOnDiskSizeBytes)}  L:${fmtBytes(state.rootLogicalSizeBytes)}",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (!state.shizukuDiagnostics.isNullOrBlank()) {
                     Text(
-                        "Shizuku: ${state.shizukuDiagnostics}",
+                        state.shizukuDiagnostics.orEmpty(),
                         fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1
@@ -298,7 +357,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
             /* ── tree list ── */
             if (treeRows.isNotEmpty()) {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(treeRows.take(2000), key = { it.node.path }) { row ->
+                    items(treeRows.take(MAX_VISIBLE_ROWS), key = { it.node.path }) { row ->
                         TreeRowItem(
                             label = prettySegment(row.node.name.ifBlank { row.node.item?.name ?: "(folder)" }),
                             depth = row.depth,
@@ -310,6 +369,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                             onDiskBytes = row.node.onDiskSizeBytes,
                             logicalBytes = row.node.logicalSizeBytes,
                             sizeFraction = row.node.onDiskSizeBytes.toFloat() / rootBytesForBars,
+                            allowDelete = state.scanSource != ScanSource.APP_STATS,
                             onToggle = {
                                 val cur = expandedMap[row.node.path] ?: false
                                 expandedMap[row.node.path] = !cur
@@ -317,6 +377,16 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                             },
                             onDelete = { row.node.item?.let { pendingDelete = it } }
                         )
+                    }
+                    if (treeRows.size > MAX_VISIBLE_ROWS) {
+                        item {
+                            Text(
+                                "+ ${treeRows.size - MAX_VISIBLE_ROWS} more rows — collapse a branch or use a filter",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
                     }
                 }
             } else if (!state.isScanning && filteredItems.isNotEmpty()) {
@@ -333,6 +403,7 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
                             onDiskBytes = item.onDiskSizeBytes,
                             logicalBytes = item.logicalSizeBytes,
                             sizeFraction = item.onDiskSizeBytes.toFloat() / rootBytesForBars,
+                            allowDelete = state.scanSource != ScanSource.APP_STATS,
                             onToggle = {},
                             onDelete = { pendingDelete = item }
                         )
@@ -344,16 +415,29 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
 
     /* ── trim caches dialog ── */
     if (pendingTrimCaches) {
+        val privilegedCleanup = vm.hasShizukuAccess()
         AlertDialog(
             onDismissRequest = { pendingTrimCaches = false },
-            title = { Text("Trim all app caches") },
-            text = { Text("Clear cache of ALL apps via Shizuku (pm trim-caches)? Safe: apps rebuild caches on demand. Can take up to a minute.") },
+            title = { Text("Clear app caches") },
+            text = {
+                Text(
+                    if (privilegedCleanup) {
+                        "Clear caches of all apps using private access? Apps rebuild caches on demand. This can take up to a minute."
+                    } else {
+                        "Open Android's cache cleanup dialog? Android will ask for confirmation. Private access is not required."
+                    }
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     UiTrace.ui("trim-caches confirm")
                     pendingTrimCaches = false
-                    vm.trimAllCaches(context)
-                }) { Text("Trim") }
+                    if (privilegedCleanup) {
+                        vm.trimAllCaches(context)
+                    } else {
+                        openSystemCacheCleanup(context)
+                    }
+                }) { Text("Clear") }
             },
             dismissButton = {
                 TextButton(onClick = {
@@ -412,6 +496,7 @@ private fun TreeRowItem(
     onDiskBytes: Long,
     logicalBytes: Long,
     sizeFraction: Float,
+    allowDelete: Boolean,
     onToggle: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -443,6 +528,7 @@ private fun TreeRowItem(
             onDiskBytes = onDiskBytes,
             logicalBytes = logicalBytes,
             isDir = isDir,
+            allowDelete = allowDelete,
             onDelete = onDelete
         )
     }
@@ -460,6 +546,7 @@ private fun TreeRowContent(
     onDiskBytes: Long,
     logicalBytes: Long,
     isDir: Boolean,
+    allowDelete: Boolean,
     onDelete: () -> Unit
 ) {
     Row(
@@ -493,7 +580,7 @@ private fun TreeRowContent(
 
             // folder / file icon
             Icon(
-                imageVector = if (isDir) Icons.Default.Folder else Icons.Default.InsertDriveFile,
+                imageVector = if (isDir) Icons.Default.Folder else Icons.AutoMirrored.Filled.InsertDriveFile,
                 contentDescription = null,
                 modifier = Modifier.size(14.dp),
                 tint = if (isDir) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurfaceVariant
@@ -515,15 +602,15 @@ private fun TreeRowContent(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Text("D:${fmtBytes(onDiskBytes)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
+            Text("D≈${fmtBytes(onDiskBytes)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
             Text(
                 "L:${fmtBytes(logicalBytes)}",
                 fontSize = 10.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            if (item != null && !item.isDirectory) {
-                IconButton(onClick = onDelete, modifier = Modifier.size(20.dp)) {
-                    Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(12.dp))
+            if (allowDelete && item != null && !item.isDirectory) {
+                IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(15.dp))
                 }
             }
         }
@@ -633,15 +720,58 @@ private fun hasAllFilesAccess(): Boolean {
     }
 }
 
-private fun requestAllFilesAccess(context: android.content.Context) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+private fun sharedStorageRoot(): String =
+    Environment.getExternalStorageDirectory().absolutePath.trimEnd('/')
+
+private fun requestAllFilesAccess(context: android.content.Context): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
     val intent = Intent(
         Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
         Uri.parse("package:${context.packageName}")
     )
     val fallback = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-    runCatching { context.startActivity(intent) }.onFailure {
-        runCatching { context.startActivity(fallback) }
+    return runCatching {
+        context.startActivity(intent)
+        true
+    }.getOrElse {
+        runCatching {
+            context.startActivity(fallback)
+            true
+        }.getOrDefault(false)
+    }
+}
+
+private fun requestUsageAccess(context: android.content.Context): Boolean {
+    val intent = Intent(
+        Settings.ACTION_USAGE_ACCESS_SETTINGS,
+        Uri.parse("package:${context.packageName}")
+    )
+    val fallback = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+    return runCatching {
+        context.startActivity(intent)
+        true
+    }.getOrElse {
+        runCatching {
+            context.startActivity(fallback)
+            true
+        }.getOrDefault(false)
+    }
+}
+
+private fun openSystemCacheCleanup(context: android.content.Context): Boolean {
+    val action = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        StorageManager.ACTION_CLEAR_APP_CACHE
+    } else {
+        StorageManager.ACTION_MANAGE_STORAGE
+    }
+    return runCatching {
+        context.startActivity(Intent(action))
+        true
+    }.getOrElse {
+        runCatching {
+            context.startActivity(Intent(StorageManager.ACTION_MANAGE_STORAGE))
+            true
+        }.getOrDefault(false)
     }
 }
 
@@ -782,4 +912,3 @@ private fun toRelativePath(absPath: String, basePath: String?): String {
     }
     return normalizedAbs
 }
-

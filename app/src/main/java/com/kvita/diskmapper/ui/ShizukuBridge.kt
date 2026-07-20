@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Environment
 import com.kvita.diskmapper.BuildConfig
 import com.kvita.diskmapper.shizuku.IShizukuCleanerService
 import com.kvita.diskmapper.shizuku.ShizukuCleanerUserService
@@ -55,7 +56,7 @@ class ShizukuBridge {
 
     suspend fun scanAndroidPrivate(context: Context, telegramOnly: Boolean, maxItems: Int = 5000): String {
         return withService(context) { service ->
-            service.scanPaths("/storage/emulated/0", telegramOnly, maxItems)
+            service.scanPaths(Environment.getExternalStorageDirectory().absolutePath, telegramOnly, maxItems)
         }
     }
 
@@ -67,13 +68,7 @@ class ShizukuBridge {
 
     suspend fun diagnostics(context: Context): String {
         return withService(context) { service ->
-            service.diagnostics()
-        }
-    }
-
-    suspend fun diskStats(context: Context): String {
-        return withService(context) { service ->
-            service.diskStats()
+            service.diagnostics(Environment.getExternalStorageDirectory().absolutePath)
         }
     }
 

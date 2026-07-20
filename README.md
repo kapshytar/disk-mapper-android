@@ -6,21 +6,22 @@ Android storage analysis tool: shows where disk space actually goes, as an expan
 The app answers one question: "Why is ~95-100 GB used when regular folders show much less?"
 
 Two analysis modes:
-- file tree (`Root scan`, `Shizuku`),
+- file tree (`Shared files`, optional `Private files`),
 - system-level breakdown by categories and apps (`Apps`).
 
 ## Current features
 - `Root scan` of `/storage/emulated/0` (via All files access).
-- `Shizuku` scan of `Android/data` and `Android/obb`.
-- `Apps` mode with full categorization from `dumpsys diskstats`:
+- Optional Shizuku scan of `Android/data` and `Android/obb`, including a bounded list of the largest deletable files.
+- `Apps` mode through Android's public `StorageStatsManager` API (no Shizuku required):
   - `apps-apk`, `apps-data`, `apps-cache`, `system`, `other`, `photos`, `videos`, `audio`, `free`.
 - Per-app drill-down:
   - by app (total APK+data+cache),
   - APK by app,
   - data by app,
   - cache by app.
-- `Trim caches` action: clears caches of ALL apps in one tap via Shizuku
-  (`pm trim-caches`) — safe, apps rebuild caches on demand; reports freed bytes.
+- `Clear caches` action:
+  - one-tap `pm trim-caches` when private Shizuku access is ready;
+  - Android's confirmation-based cache cleanup screen otherwise.
 - Two sizes for every node:
   - `D` - actually allocated on disk (on-disk),
   - `L` - logical data size (without cluster overhead).
@@ -36,9 +37,9 @@ Two analysis modes:
    - by-app totals (top by overall size),
    - data by app (top by app data),
    - cache by app (top by cache).
-5. Tap `Trim caches` to clear all app caches at once (needs Shizuku).
-6. For user folders, tap `Root scan`.
-7. For `Android/data` and `Android/obb`, use `Shizuku`.
+5. Tap `Clear caches`; Shizuku is optional because Android's cleanup screen is used as fallback.
+6. For user folders, tap `Shared files`.
+7. For a file-level view of `Android/data` and `Android/obb`, use optional `Private files` access.
 
 ## Math caveat
 - Categories are the base used/free summary.
@@ -47,11 +48,13 @@ Two analysis modes:
 
 ## Permissions and access
 - `Usage Access` is required for proper per-app detail.
-- `Shizuku` is required for full access to `Android/data`/`obb` and for `Trim caches`.
+- `Shizuku` is required only for file-level access to `Android/data`/`obb` and unattended cache trimming.
+- `Apps` uses Usage Access and does not require Shizuku.
 - Without Shizuku, Android private folders are only partially visible on some ROMs.
 
 ## Limitations
 - On some ROMs, even with Shizuku (shell mode / uid 2000), access to some private data may be restricted.
+- Android does not expose a normal-app API for browsing other apps' `Android/data` trees; without Shizuku/root the app shows public aggregate statistics instead.
 - The UI shows what is accessible and explicitly reports the visible share of app bytes (`Apps visible: X / Y`).
 
 ## Building from source

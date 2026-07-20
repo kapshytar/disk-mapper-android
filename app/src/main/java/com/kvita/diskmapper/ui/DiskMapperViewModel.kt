@@ -3,9 +3,13 @@
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kvita.diskmapper.data.AppStorageStats
+import com.kvita.diskmapper.data.AndroidPrivateAccounting
+import com.kvita.diskmapper.data.ByteTotals
+import com.kvita.diskmapper.data.PathBytes
 import com.kvita.diskmapper.data.StorageItem
 import com.kvita.diskmapper.data.StorageScanner
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +50,11 @@ class DiskMapperViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(DiskMapperUiState())
     val uiState: StateFlow<DiskMapperUiState> = _uiState.asStateFlow()
 
+    fun hasUsageAccess(context: Context): Boolean =
+        AppStorageStats.hasUsageAccess(context.applicationContext)
+
+    fun hasShizukuAccess(): Boolean = shizukuBridge.canUseWithoutRequest()
+
     fun restorePersistedFolder(context: Context) {
         if (_uiState.value.selectedFolderUri != null || _uiState.value.selectedRootPath != null) return
         val persisted = context.contentResolver.persistedUriPermissions.firstOrNull()?.uri ?: return
@@ -76,7 +85,7 @@ class DiskMapperViewModel : ViewModel() {
 
     fun selectAllFilesRoot(path: String, context: Context) {
         UiTrace.vm("selectAllFilesRoot path=$path")
-        val warning = if (path == "/storage/emulated/0") {
+        val warning = if (path == sharedStorageRoot()) {
             when (shizukuBridge.ensurePermission()) {
                 ShizukuBridge.PermissionState.READY -> null
                 ShizukuBridge.PermissionState.PERMISSION_REQUESTED ->
@@ -130,7 +139,7 @@ class DiskMapperViewModel : ViewModel() {
                 _uiState.update {
                     it.copy(
                         selectedFolderUri = null,
-                        selectedRootPath = "/storage/emulated/0/Android",
+                        selectedRootPath = "${sharedStorageRoot()}/Android",
                         scanSource = ScanSource.SHIZUKU_ANDROID,
                         shizukuTelegramOnly = telegramOnly,
                         shizukuDiagnostics = null,
@@ -155,18 +164,18 @@ class DiskMapperViewModel : ViewModel() {
                     when (state.scanSource) {
                         ScanSource.SAF -> {
                             val rootUri = state.selectedFolderUri
-                                ?: return@runCatching throw IllegalStateException("Folder is not selected")
+                                ?: throw IllegalStateException("Folder is not selected")
                             scanner.scan(context.applicationContext, rootUri) { visited ->
                                 _uiState.update { it.copy(visitedNodes = visited) }
                             }
                         }
                         ScanSource.ALL_FILES -> {
                             val rootPath = state.selectedRootPath
-                                ?: return@runCatching throw IllegalStateException("Root path is not selected")
+                                ?: throw IllegalStateException("Root path is not selected")
                             val baseScan = scanner.scanFileTree(File(rootPath)) { visited ->
                                 _uiState.update { it.copy(visitedNodes = visited) }
                             }
-                            if (rootPath == "/storage/emulated/0" && shizukuBridge.canUseWithoutRequest()) {
+                            if (rootPath == sharedStorageRoot() && shizukuBridge.canUseWithoutRequest()) {
                                 try {
                                     val payload = shizukuBridge.scanAndroidPrivate(context.applicationContext, false)
                                     val shizukuItems = parseShizukuPayload(payload)
@@ -180,12 +189,12 @@ class DiskMapperViewModel : ViewModel() {
                             }
                         }
                         ScanSource.SHIZUKU_ANDROID -> {
-                            return@runCatching throw IllegalStateException(
+                            throw IllegalStateException(
                                 "Use Shizuku scan action for Android/data and Android/obb."
                             )
                         }
                         ScanSource.APP_STATS -> {
-                            return@runCatching throw IllegalStateException(
+                            throw IllegalStateException(
                                 "Use Apps action for per-app storage stats."
                             )
                         }
@@ -232,19 +241,18 @@ class DiskMapperViewModel : ViewModel() {
             }
 
             result.onSuccess { (diagnostics, items) ->
-                val logical = items.sumOf { it.logicalSizeBytes }
-                val onDisk = items.sumOf { it.onDiskSizeBytes }
+                val totals = AndroidPrivateAccounting.rootTotals(items.map { it.toPathBytes() })
                 val accessWarning = buildShizukuAccessWarning(diagnostics, items)
                 UiTrace.vm(
-                    "scanShizuku success items=${items.size} onDisk=$onDisk logical=$logical diagnostics=$diagnostics warning=${!accessWarning.isNullOrBlank()}"
+                    "scanShizuku success items=${items.size} onDisk=${totals.onDiskBytes} logical=${totals.logicalBytes} diagnostics=$diagnostics warning=${!accessWarning.isNullOrBlank()}"
                 )
                 _uiState.update {
                     it.copy(
                         isScanning = false,
                         visitedNodes = items.size.toLong(),
-                        rootLogicalSizeBytes = logical,
-                        rootOnDiskSizeBytes = onDisk,
-                        shizukuDiagnostics = diagnostics,
+                        rootLogicalSizeBytes = totals.logicalBytes,
+                        rootOnDiskSizeBytes = totals.onDiskBytes,
+                        shizukuDiagnostics = formatShizukuDiagnostics(diagnostics),
                         items = items.sortedByDescending { item -> item.onDiskSizeBytes },
                         errorMessage = accessWarning
                     )
@@ -264,12 +272,17 @@ class DiskMapperViewModel : ViewModel() {
     fun deleteItem(context: Context, item: StorageItem) {
         UiTrace.vm("deleteItem start path=${item.absolutePath} uri=${item.uri}")
         viewModelScope.launch(Dispatchers.IO) {
-            val ok = if (_uiState.value.scanSource == ScanSource.ALL_FILES && item.absolutePath != null) {
-                scanner.deleteFile(item.absolutePath)
-            } else if (_uiState.value.scanSource == ScanSource.SHIZUKU_ANDROID && item.absolutePath != null) {
-                runCatching {
-                    shizukuBridge.deleteFile(context.applicationContext, item.absolutePath)
-                }.getOrDefault(false)
+            val itemPath = item.absolutePath
+            val ok = if (AndroidPrivateAccounting.isPrivatePath(itemPath)) {
+                if (itemPath != null && shizukuBridge.canUseWithoutRequest()) {
+                    runCatching {
+                        shizukuBridge.deleteFile(context.applicationContext, itemPath)
+                    }.getOrDefault(false)
+                } else {
+                    false
+                }
+            } else if (_uiState.value.scanSource == ScanSource.ALL_FILES && itemPath != null) {
+                scanner.deleteFile(itemPath)
             } else {
                 scanner.delete(context.applicationContext, item.uri)
             }
@@ -302,21 +315,11 @@ class DiskMapperViewModel : ViewModel() {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val diskStatsRaw = if (shizukuBridge.canUseWithoutRequest()) {
-                        runCatching {
-                            shizukuBridge.diskStats(context.applicationContext)
-                        }.onFailure {
-                            UiTrace.error("scanAppStats shizuku diskstats failed", it)
-                        }.getOrNull()
-                    } else {
-                        null
-                    }
-                    val full = AppStorageStats.queryFull(context.applicationContext, diskStatsRaw)
+                    val full = AppStorageStats.queryFull(context.applicationContext)
                     val items = AppStorageStats.toStorageItems(full)
                     val totalUsed = full.categories.totalUsed
-                    val fallbackTotal = items.sumOf { it.onDiskSizeBytes }
-                    val rootBytes = if (totalUsed > 0L) totalUsed else fallbackTotal
                     val visibleAppsTotal = full.apps.sumOf { it.totalBytes }
+                    val rootBytes = if (totalUsed > 0L) totalUsed else visibleAppsTotal
                     val expectedAppsTotal = full.categories.appSize + full.categories.appDataSize + full.categories.appCacheSize
                     val visibilityNote = if (expectedAppsTotal > 0L) {
                         val pct = (visibleAppsTotal * 100.0 / expectedAppsTotal.toDouble())
@@ -453,9 +456,10 @@ class DiskMapperViewModel : ViewModel() {
     }
 
     private fun normalizeAndroidPath(path: String): String {
+        val storageRoot = sharedStorageRoot()
         return path
-            .replace("/sdcard/", "/storage/emulated/0/")
-            .replace("/storage/self/primary/", "/storage/emulated/0/")
+            .replace("/sdcard/", "$storageRoot/")
+            .replace("/storage/self/primary/", "$storageRoot/")
     }
 
     private fun buildShizukuAccessWarning(diagnostics: String, items: List<StorageItem>): String? {
@@ -477,7 +481,29 @@ class DiskMapperViewModel : ViewModel() {
         if (uid == 2000 && items.isEmpty()) {
             return "No readable files in Android/data or Android/obb via shell Shizuku. Root/Sui backend is recommended."
         }
+        if (items.isNotEmpty() && items.none { AndroidPrivateAccounting.isPrivateRoot(it.absolutePath) }) {
+            return "Private scan returned no root totals. Results are incomplete; rescan after updating the app."
+        }
         return null
+    }
+
+    private fun formatShizukuDiagnostics(diagnostics: String): String {
+        val values = diagnostics
+            .split(';')
+            .mapNotNull { part ->
+                val separator = part.indexOf('=')
+                if (separator <= 0) null else part.substring(0, separator) to part.substring(separator + 1)
+            }
+            .toMap()
+        val uid = values["uid"]?.toIntOrNull()
+        val dataEntries = values["dataEntries"]?.toIntOrNull() ?: -1
+        val obbEntries = values["obbEntries"]?.toIntOrNull() ?: -1
+        return when {
+            uid == 0 -> "Private files: full root access"
+            dataEntries >= 0 || obbEntries >= 0 ->
+                "Private files: available (${maxOf(dataEntries, 0)} data, ${maxOf(obbEntries, 0)} obb entries)"
+            else -> "Private files: limited by Android"
+        }
     }
 
     private fun mergeRootAndShizuku(
@@ -486,8 +512,11 @@ class DiskMapperViewModel : ViewModel() {
     ): com.kvita.diskmapper.data.ScanResult {
         if (shizukuItems.isEmpty()) return base
 
+        val shizukuRoots = shizukuItems.filter { AndroidPrivateAccounting.isPrivateRoot(it.absolutePath) }
+        if (shizukuRoots.isEmpty()) return base
+
         val mergedMap = linkedMapOf<String, StorageItem>()
-        for (item in base.items) {
+        for (item in base.items.filterNot { AndroidPrivateAccounting.isPrivatePath(it.absolutePath) }) {
             val key = item.absolutePath ?: item.uri.toString()
             mergedMap[key] = item
         }
@@ -497,22 +526,18 @@ class DiskMapperViewModel : ViewModel() {
         }
 
         val baseAndroidPrivate = base.items
-            .filter { it.isDirectory && (it.absolutePath == "/storage/emulated/0/Android/data" || it.absolutePath == "/storage/emulated/0/Android/obb") }
-        val baseLogicalPrivate = baseAndroidPrivate.sumOf { it.logicalSizeBytes }
-        val baseOnDiskPrivate = baseAndroidPrivate.sumOf { it.onDiskSizeBytes }
-        val shizukuAndroidPrivate = shizukuItems
-            .filter { it.isDirectory && (it.absolutePath == "/storage/emulated/0/Android/data" || it.absolutePath == "/storage/emulated/0/Android/obb") }
-        val shizukuLogicalPrivate = shizukuAndroidPrivate.sumOf { it.logicalSizeBytes }
-        val shizukuOnDiskPrivate = shizukuAndroidPrivate.sumOf { it.onDiskSizeBytes }
-
-        val newLogical = base.rootLogicalSizeBytes - baseLogicalPrivate + shizukuLogicalPrivate
-        val newOnDisk = base.rootOnDiskSizeBytes - baseOnDiskPrivate + shizukuOnDiskPrivate
+            .filter { it.isDirectory && AndroidPrivateAccounting.isPrivateRoot(it.absolutePath) }
+        val newTotals = AndroidPrivateAccounting.replaceRootTotals(
+            base = ByteTotals(base.rootLogicalSizeBytes, base.rootOnDiskSizeBytes),
+            basePrivate = AndroidPrivateAccounting.rootTotals(baseAndroidPrivate.map { it.toPathBytes() }),
+            replacementPrivate = AndroidPrivateAccounting.rootTotals(shizukuRoots.map { it.toPathBytes() })
+        )
 
         return com.kvita.diskmapper.data.ScanResult(
             items = mergedMap.values.sortedByDescending { it.onDiskSizeBytes },
             visitedNodes = base.visitedNodes + shizukuItems.size,
-            rootLogicalSizeBytes = newLogical.coerceAtLeast(0L),
-            rootOnDiskSizeBytes = newOnDisk.coerceAtLeast(0L)
+            rootLogicalSizeBytes = newTotals.logicalBytes,
+            rootOnDiskSizeBytes = newTotals.onDiskBytes
         )
     }
 
@@ -527,5 +552,13 @@ class DiskMapperViewModel : ViewModel() {
         }
         return String.format(Locale.US, "%.1f %s", value, units[i])
     }
-}
 
+    private fun StorageItem.toPathBytes(): PathBytes = PathBytes(
+        path = absolutePath,
+        logicalBytes = logicalSizeBytes,
+        onDiskBytes = onDiskSizeBytes
+    )
+
+    private fun sharedStorageRoot(): String =
+        Environment.getExternalStorageDirectory().absolutePath.trimEnd('/')
+}
