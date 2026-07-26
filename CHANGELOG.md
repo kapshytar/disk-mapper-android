@@ -1,10 +1,13 @@
 # Changelog
 
 ## Unreleased
-- Fixed category totals not reconciling with disk size: `getFreeBytes()` reports
-  reclaimable cache as free, so used space is now raised by `cacheBytes` and free
-  recomputed, keeping `used + free = capacity` and `System` a real remainder
-  instead of collapsing to zero.
+- Fixed totals not matching the device: capacity and free space now come from
+  `statfs` on the data partition instead of `StorageStatsManager`, whose
+  `getTotalBytes()` returns the advertised size (a Galaxy S10+ answers 128 GiB
+  for a 109 GiB filesystem) and whose `getFreeBytes()` counts reclaimable cache
+  as free. Measured on device: 107.5 GiB used / 20.5 GiB free became
+  83.8 / 25.2, matching `df`. `System` is again a real remainder instead of
+  collapsing to zero, and the categories always sum to used space.
 - Fixed the tree collapsing whenever a filter chip was tapped; expansion state now
   survives filter changes and rescans, and resets only for a new scan target.
 - Fixed `Shizuku` call timeouts covering only service binding, not the call itself:

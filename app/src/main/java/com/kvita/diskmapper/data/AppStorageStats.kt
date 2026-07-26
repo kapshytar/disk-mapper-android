@@ -5,7 +5,9 @@ import android.app.usage.StorageStatsManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Environment
 import android.os.Process
+import android.os.StatFs
 import android.os.storage.StorageManager
 
 /**
@@ -85,8 +87,13 @@ object AppStorageStats {
         val user = Process.myUserHandle()
         val appStats = manager.queryStatsForUser(uuid, user)
         val external = manager.queryExternalStatsForUser(uuid, user)
-        val total = manager.getTotalBytes(uuid)
-        val free = manager.getFreeBytes(uuid)
+        // StorageStatsManager.getTotalBytes() reports the advertised size (a
+        // Galaxy S10+ answers exactly 128 GiB for a 109 GiB filesystem) and
+        // getFreeBytes() counts reclaimable cache as free. statfs reports what
+        // df does, which is also how the per-category figures count bytes.
+        val fs = StatFs(Environment.getDataDirectory().absolutePath)
+        val total = fs.blockCountLong * fs.blockSizeLong
+        val free = fs.availableBlocksLong * fs.blockSizeLong
         return calculateCategoryBreakdown(
             RawCategoryStats(
                 appBytes = appStats.appBytes,
@@ -118,21 +125,14 @@ object AppStorageStats {
             ).coerceAtLeast(0L)
         val accounted = app + dataWithoutCache + cache + images + videos + audio + sharedOther
 
-        // StorageStatsManager.getFreeBytes() reports reclaimable cache as free
-        // space, while `accounted` counts that cache as used. Add it back so
-        // used/free match what df reports and System stays a real remainder.
-        // Only the part that actually fits inside the reported free space is
-        // reclaimable, so adding more than that would invent used bytes.
+        // Caller passes filesystem figures (statfs), which count cache as used
+        // exactly like `accounted` does, so used is a plain capacity - free.
+        // Measured categories win when they already exceed that: the parts must
+        // always sum to the whole, and only contradictory platform data can
+        // push used past capacity.
         val capacity = raw.totalCapacity.coerceAtLeast(0L)
         val reportedFree = raw.totalFree.coerceAtLeast(0L).coerceAtMost(capacity)
-        val reclaimableCache = cache.coerceAtMost(reportedFree)
-        // Measured categories win over the derived figure: if they already
-        // exceed it, `used` follows them so the parts always sum to the whole.
-        // Free absorbs the difference; only contradictory platform data (parts
-        // larger than the disk) can push used past capacity, and reporting that
-        // beats silently showing a breakdown that does not add up.
-        val used = maxOf(capacity - reportedFree + reclaimableCache, accounted)
-            .coerceAtLeast(0L)
+        val used = maxOf(capacity - reportedFree, accounted).coerceAtLeast(0L)
         val free = (capacity - used).coerceAtLeast(0L)
 
         return CategoryBreakdown(

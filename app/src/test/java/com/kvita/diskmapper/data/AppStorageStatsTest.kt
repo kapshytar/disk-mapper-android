@@ -25,10 +25,9 @@ class AppStorageStatsTest {
         assertEquals(400, result.appDataSize)
         assertEquals(100, result.appCacheSize)
         assertEquals(200, result.otherSize)
-        // getFreeBytes() reports cache as free, so used is raised by cacheBytes.
-        assertEquals(4_100, result.totalUsed)
-        assertEquals(900, result.totalFree)
-        assertEquals(2_700, result.systemSize)
+        assertEquals(4_000, result.totalUsed)
+        assertEquals(1_000, result.totalFree)
+        assertEquals(2_600, result.systemSize)
         assertEquals(
             result.totalUsed,
             result.appSize + result.appDataSize + result.appCacheSize +
@@ -90,34 +89,38 @@ class AppStorageStatsTest {
     }
 
     /**
-     * Regression: cache counted as free by the platform used to make
-     * `accounted` exceed `used`, collapsing System to zero and pushing the
-     * category sum above the disk size.
+     * Regression, measured on a Galaxy S10+: feeding the advertised size from
+     * `getTotalBytes()` (exactly 128 GiB) instead of the filesystem size showed
+     * 107.5 GiB used / 20.5 GiB free where df said 83.8 / 25.2. Capacity and
+     * free must come from statfs.
      */
     @Test
-    fun largeCache_doesNotCollapseSystemOrOversumCategories() {
+    fun filesystemFigures_matchDf() {
+        val capacity = 28_571_259L * 4096   // statfs /data on the test device
+        val free = 6_607_734L * 4096
         val result = AppStorageStats.calculateCategoryBreakdown(
             AppStorageStats.RawCategoryStats(
-                appBytes = 1_000,
-                dataBytesIncludingCache = 3_000,
-                cacheBytes = 2_500,
-                externalTotalBytes = 0,
-                externalAppBytes = 0,
-                imageBytes = 0,
-                videoBytes = 0,
-                audioBytes = 0,
-                totalCapacity = 10_000,
-                totalFree = 6_500
+                appBytes = 33_000_000_000,
+                dataBytesIncludingCache = 27_000_000_000,
+                cacheBytes = 7_000_000_000,
+                externalTotalBytes = 12_000_000_000,
+                externalAppBytes = 4_000_000_000,
+                imageBytes = 2_500_000_000,
+                videoBytes = 2_900_000_000,
+                audioBytes = 260_000_000,
+                totalCapacity = capacity,
+                totalFree = free
             )
         )
 
+        assertEquals(capacity - free, result.totalUsed)
+        assertEquals(free, result.totalFree)
+        assertEquals(capacity, result.totalUsed + result.totalFree)
         val sum = result.appSize + result.appDataSize + result.appCacheSize +
             result.photosSize + result.videosSize + result.audioSize +
             result.otherSize + result.systemSize
-        assertEquals(6_000, result.totalUsed)
         assertEquals(sum, result.totalUsed)
-        assertEquals(2_000, result.systemSize)
-        assertTrue(sum <= result.totalCapacity)
+        assertTrue(result.systemSize > 0)
     }
 
     @Test
