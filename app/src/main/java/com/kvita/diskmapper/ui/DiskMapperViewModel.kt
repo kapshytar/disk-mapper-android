@@ -464,8 +464,16 @@ class DiskMapperViewModel : ViewModel() {
                     updateIfCurrent(generation) {
                         it.copy(isScanning = false, errorMessage = "Caches trimmed, freed ${formatBytes(freed)}")
                     }
-                    if (_uiState.value.scanSource == ScanSource.APP_STATS) {
-                        scanAppStats(context)
+                    // Trimming shrinks whatever is on screen, so refresh the
+                    // loaded source instead of leaving pre-cleanup sizes up.
+                    val current = _uiState.value
+                    if (current.loadedKey != null) {
+                        when (current.scanSource) {
+                            ScanSource.APP_STATS -> scanAppStats(context)
+                            ScanSource.SHIZUKU_ANDROID ->
+                                scanShizuku(context, current.shizukuTelegramOnly)
+                            ScanSource.SAF, ScanSource.ALL_FILES -> scan(context)
+                        }
                     }
                 } else {
                     updateIfCurrent(generation) {

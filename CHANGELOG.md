@@ -19,6 +19,8 @@
 - Fixed a superseded scan overwriting a newer one's results, and the progress
   spinner sticking on forever when scans overlapped: scans now carry a generation
   and stale completions are ignored. `Clear caches` shares the same protocol.
+- `Clear caches` now refreshes whichever source is on screen instead of only the
+  `Apps` view, so private and shared file trees no longer show pre-cleanup sizes.
 - `deleteItem` snapshots the scan source and Telegram-only flag once instead of
   re-reading them mid-operation.
 - Tree flattening is memoized and no longer re-sorts already-sorted children on every
