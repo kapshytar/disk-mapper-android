@@ -40,6 +40,8 @@ data class DiskMapperUiState(
     val shizukuTelegramOnly: Boolean = false,
     val shizukuDiagnostics: String? = null,
     val items: List<StorageItem> = emptyList(),
+    /** Identifies the scan that produced [items]; null while nothing is loaded. */
+    val loadedKey: String? = null,
     val errorMessage: String? = null
 )
 
@@ -47,8 +49,51 @@ class DiskMapperViewModel : ViewModel() {
     private val scanner = StorageScanner()
     private val shizukuBridge = ShizukuBridge()
 
+    private fun DiskMapperUiState.scanKey(): String =
+        "$scanSource|${selectedRootPath ?: selectedFolderUri}|$shizukuTelegramOnly"
+
+    private val scanGeneration = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** Claims the newest scan slot; earlier scans become stale from here on. */
+    private fun beginScan(): Long = scanGeneration.incrementAndGet()
+
+    /**
+     * Applies [transform] only if [generation] is still the newest scan, so a
+     * slow scan cannot overwrite a newer one's results or stop its spinner.
+     */
+    private fun updateIfCurrent(
+        generation: Long,
+        transform: (DiskMapperUiState) -> DiskMapperUiState
+    ) {
+        if (scanGeneration.get() != generation) return
+        _uiState.update { transform(it) }
+    }
+
+    /**
+     * Drops results that belong to a different scan target, so a new source
+     * never shows the previous source's tree — including when it fails.
+     */
+    private fun DiskMapperUiState.startingScan(): DiskMapperUiState {
+        val stale = loadedKey != null && loadedKey != scanKey()
+        return copy(
+            isScanning = true,
+            visitedNodes = 0,
+            errorMessage = null,
+            items = if (stale) emptyList() else items,
+            loadedKey = if (stale) null else loadedKey,
+            rootLogicalSizeBytes = if (stale) 0 else rootLogicalSizeBytes,
+            rootOnDiskSizeBytes = if (stale) 0 else rootOnDiskSizeBytes,
+            shizukuDiagnostics = if (stale) null else shizukuDiagnostics
+        )
+    }
+
     private val _uiState = MutableStateFlow(DiskMapperUiState())
     val uiState: StateFlow<DiskMapperUiState> = _uiState.asStateFlow()
+
+    override fun onCleared() {
+        shizukuBridge.close()
+        super.onCleared()
+    }
 
     fun hasUsageAccess(context: Context): Boolean =
         AppStorageStats.hasUsageAccess(context.applicationContext)
@@ -154,10 +199,15 @@ class DiskMapperViewModel : ViewModel() {
 
     fun scan(context: Context) {
         val state = _uiState.value
+        val scanKey = state.scanKey()
+        val generation = beginScan()
         UiTrace.vm("scan start source=${state.scanSource} folder=${state.selectedFolderUri} root=${state.selectedRootPath}")
+        // Synchronous with beginScan(): if this ran inside the coroutine, a
+        // superseded scan could raise the spinner after the newer one finished
+        // and never be allowed to lower it again.
+        _uiState.update { it.startingScan() }
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isScanning = true, visitedNodes = 0, errorMessage = null) }
 
             val result = withContext(Dispatchers.IO) {
                 runCatching {
@@ -166,14 +216,14 @@ class DiskMapperViewModel : ViewModel() {
                             val rootUri = state.selectedFolderUri
                                 ?: throw IllegalStateException("Folder is not selected")
                             scanner.scan(context.applicationContext, rootUri) { visited ->
-                                _uiState.update { it.copy(visitedNodes = visited) }
+                                updateIfCurrent(generation) { it.copy(visitedNodes = visited) }
                             }
                         }
                         ScanSource.ALL_FILES -> {
                             val rootPath = state.selectedRootPath
                                 ?: throw IllegalStateException("Root path is not selected")
                             val baseScan = scanner.scanFileTree(File(rootPath)) { visited ->
-                                _uiState.update { it.copy(visitedNodes = visited) }
+                                updateIfCurrent(generation) { it.copy(visitedNodes = visited) }
                             }
                             if (rootPath == sharedStorageRoot() && shizukuBridge.canUseWithoutRequest()) {
                                 try {
@@ -206,18 +256,19 @@ class DiskMapperViewModel : ViewModel() {
                 UiTrace.vm(
                     "scan success source=${state.scanSource} items=${scanResult.items.size} visited=${scanResult.visitedNodes} rootOnDisk=${scanResult.rootOnDiskSizeBytes} rootLogical=${scanResult.rootLogicalSizeBytes}"
                 )
-                _uiState.update {
+                updateIfCurrent(generation) {
                     it.copy(
                     isScanning = false,
                     visitedNodes = scanResult.visitedNodes,
                     rootLogicalSizeBytes = scanResult.rootLogicalSizeBytes,
                     rootOnDiskSizeBytes = scanResult.rootOnDiskSizeBytes,
-                    items = scanResult.items
+                    items = scanResult.items,
+                    loadedKey = scanKey
                 )
                 }
             }.onFailure { throwable ->
                 UiTrace.error("scan failed source=${state.scanSource}", throwable)
-                _uiState.update {
+                updateIfCurrent(generation) {
                     it.copy(
                     isScanning = false,
                     errorMessage = throwable.message ?: "Scan failed"
@@ -228,9 +279,11 @@ class DiskMapperViewModel : ViewModel() {
     }
 
     private fun scanShizuku(context: Context, telegramOnly: Boolean) {
+        val scanKey = _uiState.value.scanKey()
+        val generation = beginScan()
         UiTrace.vm("scanShizuku start telegramOnly=$telegramOnly")
+        _uiState.update { it.startingScan() }
         viewModelScope.launch {
-            _uiState.update { it.copy(isScanning = true, visitedNodes = 0, errorMessage = null) }
 
             val result = withContext(Dispatchers.IO) {
                 runCatching {
@@ -246,7 +299,7 @@ class DiskMapperViewModel : ViewModel() {
                 UiTrace.vm(
                     "scanShizuku success items=${items.size} onDisk=${totals.onDiskBytes} logical=${totals.logicalBytes} diagnostics=$diagnostics warning=${!accessWarning.isNullOrBlank()}"
                 )
-                _uiState.update {
+                updateIfCurrent(generation) {
                     it.copy(
                         isScanning = false,
                         visitedNodes = items.size.toLong(),
@@ -254,12 +307,13 @@ class DiskMapperViewModel : ViewModel() {
                         rootOnDiskSizeBytes = totals.onDiskBytes,
                         shizukuDiagnostics = formatShizukuDiagnostics(diagnostics),
                         items = items.sortedByDescending { item -> item.onDiskSizeBytes },
+                        loadedKey = scanKey,
                         errorMessage = accessWarning
                     )
                 }
             }.onFailure { throwable ->
                 UiTrace.error("scanShizuku failed telegramOnly=$telegramOnly", throwable)
-                _uiState.update {
+                updateIfCurrent(generation) {
                     it.copy(
                         isScanning = false,
                         errorMessage = throwable.message ?: "Shizuku scan failed"
@@ -271,6 +325,10 @@ class DiskMapperViewModel : ViewModel() {
 
     fun deleteItem(context: Context, item: StorageItem) {
         UiTrace.vm("deleteItem start path=${item.absolutePath} uri=${item.uri}")
+        // Snapshot before dispatch: a scan finishing mid-delete must not send
+        // the follow-up rescan to a different source than the delete used.
+        val sourceAtDelete = _uiState.value.scanSource
+        val telegramOnlyAtDelete = _uiState.value.shizukuTelegramOnly
         viewModelScope.launch(Dispatchers.IO) {
             val itemPath = item.absolutePath
             val ok = if (AndroidPrivateAccounting.isPrivatePath(itemPath)) {
@@ -281,15 +339,15 @@ class DiskMapperViewModel : ViewModel() {
                 } else {
                     false
                 }
-            } else if (_uiState.value.scanSource == ScanSource.ALL_FILES && itemPath != null) {
+            } else if (sourceAtDelete == ScanSource.ALL_FILES && itemPath != null) {
                 scanner.deleteFile(itemPath)
             } else {
                 scanner.delete(context.applicationContext, item.uri)
             }
             if (ok) {
                 UiTrace.vm("deleteItem success path=${item.absolutePath}")
-                if (_uiState.value.scanSource == ScanSource.SHIZUKU_ANDROID) {
-                    scanShizuku(context, _uiState.value.shizukuTelegramOnly)
+                if (sourceAtDelete == ScanSource.SHIZUKU_ANDROID) {
+                    scanShizuku(context, telegramOnlyAtDelete)
                 } else {
                     scan(context)
                 }
@@ -306,12 +364,11 @@ class DiskMapperViewModel : ViewModel() {
             it.copy(
                 scanSource = ScanSource.APP_STATS,
                 selectedFolderUri = null,
-                selectedRootPath = "/storage-map",
-                isScanning = true,
-                visitedNodes = 0,
-                errorMessage = null
-            )
+                selectedRootPath = "/storage-map"
+            ).startingScan()
         }
+        val scanKey = _uiState.value.scanKey()
+        val generation = beginScan()
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
@@ -343,19 +400,20 @@ class DiskMapperViewModel : ViewModel() {
 
             result.onSuccess { (scanResult, visibilityNote) ->
                 UiTrace.vm("scanAppStats success items=${scanResult.items.size} total=${scanResult.rootOnDiskSizeBytes} note=$visibilityNote")
-                _uiState.update {
+                updateIfCurrent(generation) {
                     it.copy(
                         isScanning = false,
                         visitedNodes = scanResult.visitedNodes,
                         rootLogicalSizeBytes = scanResult.rootLogicalSizeBytes,
                         rootOnDiskSizeBytes = scanResult.rootOnDiskSizeBytes,
                         items = scanResult.items,
+                        loadedKey = scanKey,
                         shizukuDiagnostics = visibilityNote
                     )
                 }
             }.onFailure { throwable ->
                 UiTrace.error("scanAppStats failed", throwable)
-                _uiState.update {
+                updateIfCurrent(generation) {
                     it.copy(
                         isScanning = false,
                         errorMessage = if (throwable is SecurityException)
@@ -391,8 +449,11 @@ class DiskMapperViewModel : ViewModel() {
             }
         }
 
+        // Shares the scan generation so trimming and a scan cannot clear each
+        // other's spinner.
+        val generation = beginScan()
+        _uiState.update { it.copy(isScanning = true, errorMessage = null) }
         viewModelScope.launch {
-            _uiState.update { it.copy(isScanning = true, errorMessage = null) }
             val result = withContext(Dispatchers.IO) {
                 runCatching { shizukuBridge.trimCaches(context.applicationContext) }
             }
@@ -400,20 +461,20 @@ class DiskMapperViewModel : ViewModel() {
                 UiTrace.vm("trimAllCaches result=$raw")
                 if (raw.startsWith("ok;")) {
                     val freed = Regex("freedBytes=(\\d+)").find(raw)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                    _uiState.update {
+                    updateIfCurrent(generation) {
                         it.copy(isScanning = false, errorMessage = "Caches trimmed, freed ${formatBytes(freed)}")
                     }
                     if (_uiState.value.scanSource == ScanSource.APP_STATS) {
                         scanAppStats(context)
                     }
                 } else {
-                    _uiState.update {
+                    updateIfCurrent(generation) {
                         it.copy(isScanning = false, errorMessage = "Trim caches failed: ${raw.removePrefix("err;")}")
                     }
                 }
             }.onFailure { throwable ->
                 UiTrace.error("trimAllCaches failed", throwable)
-                _uiState.update {
+                updateIfCurrent(generation) {
                     it.copy(isScanning = false, errorMessage = throwable.message ?: "Trim caches failed")
                 }
             }

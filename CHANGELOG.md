@@ -1,6 +1,25 @@
 # Changelog
 
 ## Unreleased
+- Fixed category totals not reconciling with disk size: `getFreeBytes()` reports
+  reclaimable cache as free, so used space is now raised by `cacheBytes` and free
+  recomputed, keeping `used + free = capacity` and `System` a real remainder
+  instead of collapsing to zero.
+- Fixed the tree collapsing whenever a filter chip was tapped; expansion state now
+  survives filter changes and rescans, and resets only for a new scan target.
+- Fixed `Shizuku` call timeouts covering only service binding, not the call itself:
+  a wedged scan or trim no longer holds the call mutex forever.
+- Fixed a failed or switched scan leaving the previous source's tree and totals on
+  screen, and stale Shizuku/Usage diagnostics under the summary line.
+- Removed the `Downloads` category, which was declared and rendered but never
+  computed, so the row could never appear.
+- Fixed a superseded scan overwriting a newer one's results, and the progress
+  spinner sticking on forever when scans overlapped: scans now carry a generation
+  and stale completions are ignored. `Clear caches` shares the same protocol.
+- `deleteItem` snapshots the scan source and Telegram-only flag once instead of
+  re-reading them mid-operation.
+- Tree flattening is memoized and no longer re-sorts already-sorted children on every
+  recomposition.
 - Removed the Shizuku dependency from `Apps`: totals and per-app sizes now use public `StorageStatsManager` APIs with Usage Access.
 - Fixed double-counting of cache bytes (`StorageStats.dataBytes` already includes cache).
 - Fixed private scan totals by emitting and counting only explicit `Android/data` and `Android/obb` root records.

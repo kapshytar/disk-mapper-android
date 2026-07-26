@@ -11,6 +11,12 @@ import android.os.Environment
 import com.kvita.diskmapper.BuildConfig
 import com.kvita.diskmapper.shizuku.IShizukuCleanerService
 import com.kvita.diskmapper.shizuku.ShizukuCleanerUserService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Mutex
@@ -23,9 +29,24 @@ import kotlin.coroutines.resumeWithException
 class ShizukuBridge {
     companion object {
         const val REQUEST_CODE = 9901
+        private const val BIND_TIMEOUT_MS = 15_000L
     }
     private val serviceCallMutex = Mutex()
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Runs the blocking Binder calls. Deliberately not a child of the caller's
+     * job: a wedged remote call cannot be interrupted, so on timeout we abandon
+     * it here instead of letting it hold [serviceCallMutex] forever.
+     */
+    private val rpcScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private val closed = AtomicBoolean(false)
+
+    /** Stops accepting new calls; abandoned in-flight ones end on their own. */
+    fun close() {
+        if (closed.compareAndSet(false, true)) rpcScope.cancel()
+    }
 
     enum class PermissionState {
         READY,
@@ -84,6 +105,7 @@ class ShizukuBridge {
         timeoutMs: Long = 15000L,
         block: (IShizukuCleanerService) -> T
     ): T {
+        check(!closed.get()) { "ShizukuBridge is closed" }
         return serviceCallMutex.withLock {
             withServiceInternal(context, timeoutMs, block)
         }
@@ -105,11 +127,12 @@ class ShizukuBridge {
 
         val unbound = AtomicBoolean(false)
         var boundConnection: ServiceConnection? = null
+        var call: Deferred<T>? = null
         try {
-            // Bind on the main callback, but run [block] on the caller's thread
-            // (Dispatchers.IO in the ViewModel) so long binder calls like
-            // trimCaches do not block the main thread.
-            val service = withTimeout(timeoutMs) {
+            // Bind on the main callback, then run [block] off the main thread.
+            // Binding and the call get separate deadlines so a long-running
+            // call (trimCaches) does not inherit a short bind timeout.
+            val service = withTimeout(BIND_TIMEOUT_MS) {
                 suspendCancellableCoroutine<IShizukuCleanerService> { continuation ->
                     val consumed = AtomicBoolean(false)
                     val connection = object : ServiceConnection {
@@ -141,8 +164,11 @@ class ShizukuBridge {
                     }
                 }
             }
-            return block(service)
+            val deferred = rpcScope.async { block(service) }
+            call = deferred
+            return withTimeout(timeoutMs) { deferred.await() }
         } finally {
+            call?.cancel()
             // Unbind outside the callback stack to avoid CME in Shizuku internals.
             boundConnection?.let { scheduleUnbind(args, it, unbound) }
         }

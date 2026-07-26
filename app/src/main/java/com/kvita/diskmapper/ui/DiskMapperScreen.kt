@@ -180,9 +180,17 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
             buildTree(filteredItems, treeBasePath)
         }
     }
-    val treeRows = flattenTree(treeRoots, expandedMap.toMap())
+    val expandedSnapshot = expandedMap.toMap()
+    val treeRows = remember(treeRoots, expandedSnapshot) {
+        flattenTree(treeRoots, expandedSnapshot)
+    }
 
-    LaunchedEffect(treeRoots) { expandedMap.clear() }
+    // Node paths are stable across filters and rescans, so only a different
+    // scan target invalidates what the user has expanded. SAF has no base path,
+    // so the picked folder identifies the target there.
+    LaunchedEffect(state.scanSource, treeBasePath, state.selectedFolderUri) {
+        expandedMap.clear()
+    }
 
     LaunchedEffect(state.errorMessage) {
         state.errorMessage?.let {
@@ -283,6 +291,11 @@ fun DiskMapperScreen(vm: DiskMapperViewModel = viewModel()) {
             }
 
             /* ── filter chips row ── */
+            // Apps mode hides the filters, so drop the selection instead of
+            // silently reapplying it when the user returns to a file view.
+            LaunchedEffect(state.scanSource) {
+                if (state.scanSource == ScanSource.APP_STATS) filter = FileFilter.ALL
+            }
             if (state.scanSource != ScanSource.APP_STATS) {
                 Row(
                     modifier = Modifier
@@ -829,16 +842,17 @@ private fun buildTree(items: List<StorageItem>, basePath: String?): List<TreeNod
 }
 
 private fun flattenTree(roots: List<TreeNode>, expanded: Map<String, Boolean>): List<TreeRow> {
+    // Order comes from buildTree/sortNode; re-sorting here would repeat it on
+    // every expand/collapse.
     val out = mutableListOf<TreeRow>()
-    val sortedRoots = roots.sortedByDescending { it.onDiskSizeBytes }
-    for ((index, root) in sortedRoots.withIndex()) {
+    for ((index, root) in roots.withIndex()) {
         appendNode(
             node = root,
             depth = 0,
             expanded = expanded,
             out = out,
             ancestorHasNext = emptyList(),
-            isLast = index == sortedRoots.lastIndex
+            isLast = index == roots.lastIndex
         )
     }
     return out
@@ -860,7 +874,7 @@ private fun appendNode(
     )
     val isExpanded = expanded[node.path] ?: false
     if (isExpanded) {
-        val children = node.children.sortedByDescending { it.onDiskSizeBytes }
+        val children = node.children
         for ((index, child) in children.withIndex()) {
             appendNode(
                 node = child,

@@ -32,7 +32,6 @@ object AppStorageStats {
         val photosSize: Long = 0,
         val videosSize: Long = 0,
         val audioSize: Long = 0,
-        val downloadsSize: Long = 0,
         val systemSize: Long = 0,
         val otherSize: Long = 0,
         val totalUsed: Long = 0,
@@ -105,7 +104,6 @@ object AppStorageStats {
     }
 
     internal fun calculateCategoryBreakdown(raw: RawCategoryStats): CategoryBreakdown {
-        val used = (raw.totalCapacity - raw.totalFree).coerceAtLeast(0L)
         val app = raw.appBytes.coerceAtLeast(0L)
         val cache = raw.cacheBytes.coerceAtLeast(0L)
         val dataWithoutCache = (raw.dataBytesIncludingCache - cache).coerceAtLeast(0L)
@@ -120,6 +118,23 @@ object AppStorageStats {
             ).coerceAtLeast(0L)
         val accounted = app + dataWithoutCache + cache + images + videos + audio + sharedOther
 
+        // StorageStatsManager.getFreeBytes() reports reclaimable cache as free
+        // space, while `accounted` counts that cache as used. Add it back so
+        // used/free match what df reports and System stays a real remainder.
+        // Only the part that actually fits inside the reported free space is
+        // reclaimable, so adding more than that would invent used bytes.
+        val capacity = raw.totalCapacity.coerceAtLeast(0L)
+        val reportedFree = raw.totalFree.coerceAtLeast(0L).coerceAtMost(capacity)
+        val reclaimableCache = cache.coerceAtMost(reportedFree)
+        // Measured categories win over the derived figure: if they already
+        // exceed it, `used` follows them so the parts always sum to the whole.
+        // Free absorbs the difference; only contradictory platform data (parts
+        // larger than the disk) can push used past capacity, and reporting that
+        // beats silently showing a breakdown that does not add up.
+        val used = maxOf(capacity - reportedFree + reclaimableCache, accounted)
+            .coerceAtLeast(0L)
+        val free = (capacity - used).coerceAtLeast(0L)
+
         return CategoryBreakdown(
             appSize = app,
             appDataSize = dataWithoutCache,
@@ -129,8 +144,8 @@ object AppStorageStats {
             audioSize = audio,
             systemSize = (used - accounted).coerceAtLeast(0L),
             otherSize = sharedOther,
-            totalCapacity = raw.totalCapacity.coerceAtLeast(0L),
-            totalFree = raw.totalFree.coerceAtLeast(0L),
+            totalCapacity = capacity,
+            totalFree = free,
             totalUsed = used
         )
     }
@@ -189,7 +204,6 @@ object AppStorageStats {
         addCategory("Photos", cat.photosSize, "photos")
         addCategory("Videos", cat.videosSize, "videos")
         addCategory("Audio", cat.audioSize, "audio")
-        addCategory("Downloads", cat.downloadsSize, "downloads")
         addCategory("System", cat.systemSize, "system")
         addCategory("Other", cat.otherSize, "other")
 
