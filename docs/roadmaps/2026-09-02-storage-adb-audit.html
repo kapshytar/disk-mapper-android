@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DiskMapperAndroid · USB/ADB storage audit</title>
+  <style>
+    :root { color-scheme: light; --bg:#faf8f4; --card:#fff; --line:#e2ddd3; --text:#2b2b28; --muted:#7a7468; --ok:#177245; --now:#a8560f; --warn:#b8791a; --bad:#b23a1e; --code:#7a4e1f; }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:18px; background:var(--bg); color:var(--text); font:13px/1.35 system-ui,-apple-system,sans-serif; }
+    main { max-width:860px; margin:auto; }
+    h1 { margin:0 0 4px; font-size:20px; }
+    h2 { margin:14px 0 7px; font-size:15px; }
+    p { margin:5px 0; }
+    .meta { color:var(--muted); }
+    .legend { margin:10px 0; color:var(--muted); }
+    .tree { border-left:2px solid var(--line); margin:8px 0 0 7px; padding-left:14px; }
+    .node { background:var(--card); border:1px solid var(--line); border-radius:7px; padding:8px 10px; margin:6px 0; }
+    .node.now { border-color:var(--now); box-shadow:0 0 0 1px #f1d5bd; }
+    .node > summary { cursor:pointer; font-weight:600; }
+    .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .now { color:var(--now); }
+    table { width:100%; border-collapse:collapse; margin-top:6px; }
+    th,td { padding:5px 6px; border-top:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-weight:600; }
+    code { color:var(--code); }
+    .fresh { border-left:3px solid var(--now); padding-left:7px; }
+    footer { margin-top:14px; color:var(--muted); font-size:12px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Где съедено внутреннее хранилище</h1>
+  <p class="meta">Обновлено: 2 сентября 2026, read-only USB/ADB аудит · <strong>Улучшить DiskMapperAndroid</strong> (gpt-5, 019f7c85-66f1-7312-8aef-b5dc09ff4759)</p>
+  <p class="legend">Статусы: <span class="ok">подтверждено</span> · <span class="warn">не проверено удалением</span> · <span class="bad">ограничение доступа</span>. Оранжевая рамка — новое в этом обновлении.</p>
+  <section class="tree">
+    <div class="node now">
+      <strong>Цель → понять, куда ушли 10+ ГБ, не трогая данные вслепую</strong>
+      <div class="tree">
+        <details class="node" open>
+          <summary><span class="ok">✓ Подтверждено: накопители</span></summary>
+          <table>
+            <tr><th>Внутренний</th><td>109 ГБ всего · 84 ГБ занято · 25 ГБ свободно (78%)</td></tr>
+            <tr><th>SD-карта</th><td>477 ГБ всего · 49 ГБ занято · 428 ГБ свободно (11%)</td></tr>
+          </table>
+          <p>Вывод: дефицит на внутреннем накопителе; SD не является источником переполнения.</p>
+        </details>
+        <details class="node" open>
+          <summary><span class="ok">✓ Подтверждено: ADB видит больше, чем Shared files без Shizuku</span></summary>
+          <p>DiskMapper без Shizuku показал около 9,0 ГБ общей папки. Прямой ADB-замер показал 13,2 ГБ, включая <code>/Android/data</code> и корзину Gallery.</p>
+          <table>
+            <tr><th>Каталог</th><th>Размер</th><th>Что заметно</th></tr>
+            <tr><td><code>DCIM</code></td><td>≈3,3 ГБ</td><td>Camera ≈1,6 ГБ; Screenshots ≈602 МБ; Screen recordings ≈444 МБ</td></tr>
+            <tr><td><code>Movies/Telegram</code></td><td>≈2,6 ГБ</td><td>локальные видео</td></tr>
+            <tr><td><code>Download</code></td><td>≈1,4 ГБ</td><td>Meta AI ≈411 МБ; старый RAR ≈223 МБ</td></tr>
+            <tr><td><code>Pictures</code></td><td>≈1,0 ГБ</td><td>Telegram ≈320 МБ; thumbnails ≈299 МБ</td></tr>
+            <tr><td><code>Android/data</code></td><td>≈3,6 ГБ</td><td>Telegram ≈2,05 ГБ; SoundCloud ≈519 МБ; Nicegram ≈450 МБ</td></tr>
+          </table>
+        </details>
+        <details class="node" open>
+          <summary><span class="ok">✓ Подтверждено: сводка приложений</span></summary>
+          <p>StorageStats показал: данные приложений ≈19,0 ГБ, кэши ≈6,1 ГБ. Крупные данные: Facebook Stella ≈3,1 ГБ, Telegram ≈2,1 ГБ, Google TTS ≈1,0 ГБ, Instagram ≈963 МБ, Chrome ≈933 МБ.</p>
+          <p class="warn">Эти числа — агрегаты системы, не список безопасных файлов. <code>pm clear</code> удалит настройки, аккаунт и данные приложения, поэтому кэш и данные не смешиваются.</p>
+        </details>
+        <details class="node" open>
+          <summary><span class="warn">△ Потенциальное освобождение — не проверено удалением</span></summary>
+          <table>
+            <tr><th>Кандидат</th><th>Оценка</th><th>Риск</th></tr>
+            <tr><td>Кэши приложений</td><td>до ≈6,1 ГБ</td><td>низкий; приложения могут скачать кэш заново</td></tr>
+            <tr><td>Корзина Gallery</td><td>≈676 МБ</td><td>удалять только если содержимое точно не нужно</td></tr>
+            <tr><td>старые видео/Meta AI/Telegram/DCIM</td><td>ещё ≈1–4+ ГБ</td><td>только после просмотра конкретных файлов</td></tr>
+          </table>
+          <p>Безопасная предварительная оценка — около 6,7 ГБ (кэш + корзина), но это не обещание до подтверждения пользователем.</p>
+        </details>
+        <details class="node" open>
+          <summary><span class="bad">Ограничение: ADB не видит приватные каталоги приложений</span></summary>
+          <p>ADB shell может читать общую память и доступный <code>Android/data</code>, но не даёт файл-за-файлом доступ к <code>/data/user/0</code>. Для этого DiskMapper оставляет Shizuku-вкладку <code>Private files</code>; на некоторых прошивках даже shell-доступ к private-папкам может требовать root/Sui.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+  <h2>Следующий безопасный шаг</h2>
+  <p class="fresh">Сначала показать пользователю конкретный список файлов и отдельно подтвердить очистку кэша. Сейчас Shizuku не запускался, файлы не удалялись, код приложения не менялся.</p>
+  <footer>Закрыто: аудит завершён. Локальный onboarding подтверждён; отдельная проектная память не заводилась.</footer>
+</main>
+</body>
+</html>
